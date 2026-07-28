@@ -10,6 +10,7 @@ import { AgentGateway } from "./agent-gateway.ts";
 import {
   OidcAuthenticator,
   assertSameOrigin,
+  requestUrl,
   requireRole,
   sendRedirect,
   type HumanAuthenticator,
@@ -190,7 +191,7 @@ export class HubServer {
 
   private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     try {
-      const url = new URL(request.url ?? "/", this.config.publicUrl);
+      const url = requestUrl(request, this.config.publicUrl);
       if (url.pathname === "/healthz") return sendJson(response, 200, { status: "ok", nodeId: this.nodeId });
       if (url.pathname === "/readyz") {
         return sendJson(response, this.isReady ? 200 : 503, {
@@ -226,7 +227,10 @@ export class HubServer {
 
     if (url.pathname === "/api/v1/auth/login" && request.method === "GET") {
       this.enforceRateLimit(request, "login", 20, 60_000);
-      const destination = await authenticator.beginLogin(url.searchParams.get("returnTo") ?? "/");
+      const destination = await authenticator.beginLogin(
+        url.searchParams.get("returnTo") ?? "/",
+        url,
+      );
       return sendRedirect(response, destination.href);
     }
     if (url.pathname === "/api/v1/auth/callback" && request.method === "GET") {
@@ -234,13 +238,22 @@ export class HubServer {
       return sendRedirect(
         response,
         result.returnTo,
-        authenticator.sessionCookie(result.sessionSecret, new Date(Date.now() + 12 * 60 * 60_000).toISOString()),
+        authenticator.sessionCookie(
+          result.sessionSecret,
+          new Date(Date.now() + 12 * 60 * 60_000).toISOString(),
+          url.protocol === "https:",
+        ),
       );
     }
     if (url.pathname === "/api/v1/auth/logout" && request.method === "POST") {
-      assertSameOrigin(request, this.config.publicUrl);
+      assertSameOrigin(request, url);
       authenticator.logout(request);
-      return sendJson(response, 200, { ok: true }, { "Set-Cookie": authenticator.expiredSessionCookie() });
+      return sendJson(
+        response,
+        200,
+        { ok: true },
+        { "Set-Cookie": authenticator.expiredSessionCookie(url.protocol === "https:") },
+      );
     }
     if (url.pathname === "/api/v1/agents/enroll" && request.method === "POST") {
       this.enforceRateLimit(request, "enroll", 10, 60_000);
@@ -286,7 +299,7 @@ export class HubServer {
     }
 
     const identity = await this.requireIdentity(request);
-    assertSameOrigin(request, this.config.publicUrl);
+    assertSameOrigin(request, url);
     if (!["GET", "HEAD", "OPTIONS"].includes(request.method ?? "GET")) {
       this.enforceRateLimit(request, `mutation:${identity.sub}`, 120, 60_000);
     }
@@ -548,7 +561,7 @@ export class HubServer {
   ): Promise<void> {
     try {
       if (!this.runtime || !this.gateway || !this.authenticator) throw new FlockError("standby", "Hub is standby", 503);
-      const url = new URL(request.url ?? "/", this.config.publicUrl);
+      const url = requestUrl(request, this.config.publicUrl);
       if (url.pathname === "/api/v1/agent/socket") {
         const agent = this.gateway.authenticate(request);
         if (!agent) throw new FlockError("unauthorized", "Invalid agent bearer token", 401);
@@ -556,7 +569,7 @@ export class HubServer {
         return;
       }
       if (url.pathname === "/api/v1/events") {
-        if (request.headers.origin !== this.config.publicUrl.origin) {
+        if (request.headers.origin !== url.origin) {
           throw new FlockError("invalid_origin", "WebSocket origin mismatch", 403);
         }
         const identity = await this.authenticator.authenticate(request);

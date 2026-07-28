@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   identityFromOidcClaims,
   OidcAuthenticator,
+  requestUrl,
   safeReturnTo,
 } from "../../src/hub/auth.ts";
 import type { HubConfig } from "../../src/hub/config.ts";
@@ -104,6 +105,40 @@ test("keeps login return paths on the current origin", () => {
   assert.equal(safeReturnTo("/app?project=one"), "/app?project=one");
   assert.equal(safeReturnTo("https://evil.example/app"), "/");
   assert.equal(safeReturnTo("//evil.example/app"), "/");
+});
+
+test("uses a direct loopback origin for local development requests", () => {
+  const localRequest = {
+    url: "/api/v1/auth/login?returnTo=%2Fapp",
+    headers: { host: "localhost:4747" },
+  } as IncomingMessage;
+  const publicUrl = new URL("https://flock.example.com");
+
+  assert.equal(
+    requestUrl(localRequest, publicUrl).href,
+    "http://localhost:4747/api/v1/auth/login?returnTo=%2Fapp",
+  );
+
+  const publicRequest = {
+    url: "/api/v1/auth/login",
+    headers: { host: "flock.example.com" },
+  } as IncomingMessage;
+  assert.equal(
+    requestUrl(publicRequest, publicUrl).href,
+    "https://flock.example.com/api/v1/auth/login",
+  );
+});
+
+test("does not trust non-loopback host headers as alternate public origins", () => {
+  const request = {
+    url: "/api/v1/auth/login",
+    headers: { host: "attacker.example" },
+  } as IncomingMessage;
+
+  assert.equal(
+    requestUrl(request, new URL("https://flock.example.com")).origin,
+    "https://flock.example.com",
+  );
 });
 
 test("removes the persisted web session on logout", async () => {

@@ -14,11 +14,11 @@ export type HumanIdentity = {
 
 export interface HumanAuthenticator {
   authenticate(request: IncomingMessage): Promise<HumanIdentity | undefined>;
-  beginLogin(returnTo: string): Promise<URL>;
+  beginLogin(returnTo: string, requestUrl?: URL): Promise<URL>;
   finishLogin(currentUrl: URL): Promise<{ identity: HumanIdentity; returnTo: string; sessionSecret: string }>;
   logout(request: IncomingMessage): void;
-  sessionCookie(secret: string, expiresAt: string): string;
-  expiredSessionCookie(): string;
+  sessionCookie(secret: string, expiresAt: string, secure?: boolean): string;
+  expiredSessionCookie(secure?: boolean): string;
 }
 
 export class OidcAuthenticator implements HumanAuthenticator {
@@ -39,7 +39,7 @@ export class OidcAuthenticator implements HumanAuthenticator {
     return this.database.getUser(session.userSub);
   }
 
-  async beginLogin(returnTo: string): Promise<URL> {
+  async beginLogin(returnTo: string, requestUrl = this.config.publicUrl): Promise<URL> {
     const configuration = await this.getConfiguration();
     const verifier = oidc.randomPKCECodeVerifier();
     const challenge = await oidc.calculatePKCECodeChallenge(verifier);
@@ -52,7 +52,7 @@ export class OidcAuthenticator implements HumanAuthenticator {
       returnTo: safeReturnTo(returnTo),
     });
     return oidc.buildAuthorizationUrl(configuration, {
-      redirect_uri: new URL("/api/v1/auth/callback", this.config.publicUrl).href,
+      redirect_uri: new URL("/api/v1/auth/callback", requestUrl).href,
       scope: "openid email profile",
       code_challenge: challenge,
       code_challenge_method: "S256",
@@ -85,20 +85,24 @@ export class OidcAuthenticator implements HumanAuthenticator {
     if (secret) this.database.deleteWebSession(secret);
   }
 
-  sessionCookie(secret: string, expiresAt: string): string {
+  sessionCookie(
+    secret: string,
+    expiresAt: string,
+    secure = this.config.publicUrl.protocol === "https:",
+  ): string {
     return serializeCookie("flock_session", secret, {
       expires: expiresAt,
-      secure: this.config.publicUrl.protocol === "https:",
+      secure,
       sameSite: "Lax",
       httpOnly: true,
       path: "/",
     });
   }
 
-  expiredSessionCookie(): string {
+  expiredSessionCookie(secure = this.config.publicUrl.protocol === "https:"): string {
     return serializeCookie("flock_session", "", {
       expires: new Date(0).toISOString(),
-      secure: this.config.publicUrl.protocol === "https:",
+      secure,
       sameSite: "Lax",
       httpOnly: true,
       path: "/",
@@ -213,6 +217,29 @@ export function assertSameOrigin(request: IncomingMessage, publicUrl: URL): void
   }
 }
 
+export function requestUrl(request: IncomingMessage, publicUrl: URL): URL {
+  const path = request.url ?? "/";
+  if (isLoopbackHostname(publicUrl.hostname)) return new URL(path, publicUrl);
+
+  const host = request.headers.host;
+  if (!host) return new URL(path, publicUrl);
+
+  try {
+    const localOrigin = new URL(`http://${host}`);
+    if (
+      localOrigin.username ||
+      localOrigin.password ||
+      localOrigin.pathname !== "/" ||
+      !isLoopbackHostname(localOrigin.hostname)
+    ) {
+      return new URL(path, publicUrl);
+    }
+    return new URL(path, localOrigin);
+  } catch {
+    return new URL(path, publicUrl);
+  }
+}
+
 export function sendRedirect(response: ServerResponse, location: string, cookie?: string): void {
   response.writeHead(302, { Location: location, ...(cookie ? { "Set-Cookie": cookie } : {}) });
   response.end();
@@ -254,4 +281,8 @@ function serializeCookie(
 export function safeReturnTo(value: string): string {
   if (!value.startsWith("/") || value.startsWith("//")) return "/";
   return value;
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return ["127.0.0.1", "localhost", "::1"].includes(hostname);
 }

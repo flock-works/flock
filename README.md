@@ -65,7 +65,9 @@ npm run dev:hub:google
 ```
 
 Open `http://localhost:4747`. The hostname must remain `localhost` because the
-Google redirect URI must match exactly.
+Google redirect URI must match exactly. A hub that is also configured with a
+public tunnel URL detects direct loopback requests and keeps the Google callback
+and post-login redirect on that loopback origin.
 
 ### Publish through Cloudflare Tunnel
 
