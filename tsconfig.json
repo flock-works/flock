@@ -9,10 +9,12 @@
     "esModuleInterop": true,
     "module": "esnext",
     "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
     "jsx": "react-jsx",
     "incremental": true,
+    "types": ["@cloudflare/workers-types", "node"],
     "plugins": [
       {
         "name": "next"

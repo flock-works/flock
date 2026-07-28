@@ -1,41 +1,75 @@
 {
-  "name": "raft-collaboration-shell",
+  "name": "@flock-works/flock",
   "version": "0.1.0",
-  "private": true,
+  "description": "Pi-compatible long-running multi-agent hub and lightweight agent",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/flock-works/flock.git"
+  },
+  "bin": {
+    "flock": "./dist-node/cli.js"
+  },
+  "files": [
+    "dist-node",
+    "dist",
+    "README.md"
+  ],
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=22.19.0"
+  },
+  "overrides": {
+    "postcss": "8.5.23",
+    "sharp": "0.35.3"
   },
   "scripts": {
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext dev",
-    "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
+    "dev:hub": "tsx src/cli.ts hub serve --data .flock-dev --listen 127.0.0.1:4747",
+    "build": "npm run build:node && npm run build:web",
+    "build:node": "tsc -p tsconfig.node.json",
+    "build:web": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
+    "prepack": "npm run build",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
-    "test": "npm run build && node --test tests/rendered-html.test.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+    "test": "npm run typecheck && npm run test:node && npm run build && node --test tests/rendered-html.test.mjs",
+    "test:node": "node --import tsx --test tests/node/*.test.ts",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "0.82.1",
+    "@earendil-works/pi-ai": "0.82.1",
+    "commander": "15.0.0",
     "drizzle-orm": "0.45.2",
-    "next": "16.2.6",
-    "react": "19.2.6",
-    "react-dom": "19.2.6"
+    "next": "16.2.12",
+    "openid-client": "6.8.4",
+    "proper-lockfile": "4.1.2",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "typebox": "1.1.38",
+    "ws": "8.21.1"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "1.37.1",
+    "@cloudflare/vite-plugin": "1.47.0",
+    "@cloudflare/workers-types": "5.20260727.1",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
+    "@types/proper-lockfile": "4.1.4",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
+    "@types/ws": "8.18.1",
     "@vitejs/plugin-react": "6.0.2",
     "@vitejs/plugin-rsc": "0.5.26",
     "drizzle-kit": "0.31.10",
     "eslint": "9.39.4",
-    "eslint-config-next": "16.2.6",
-    "react-server-dom-webpack": "19.2.6",
+    "eslint-config-next": "16.2.12",
+    "react-server-dom-webpack": "19.2.8",
     "tailwindcss": "4.2.1",
+    "tsx": "4.23.1",
     "typescript": "5.9.3",
     "vinext": "0.0.50",
-    "vite": "8.0.13",
-    "wrangler": "4.92.0"
+    "vite": "8.1.5",
+    "wrangler": "4.114.0"
   },
   "type": "module"
 }
