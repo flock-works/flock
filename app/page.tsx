@@ -458,7 +458,7 @@ function GlobalRail({
     <aside className="global-rail" aria-label="Global navigation">
       <div className="rail-top">
         <button className="server-mark" aria-label="Switch server" onClick={onServer}>
-          R
+          <img src="/flock.png" alt="" />
           <span className="online-dot" />
         </button>
         <button className="rail-button" aria-label="Search" onClick={onSearch}>
@@ -538,8 +538,8 @@ function ConversationSidebar({
     <aside className={`conversation-sidebar ${mobileOpen ? "mobile-open" : ""}`}>
       <div className="workspace-title">
         <div>
-          <span className="eyebrow">WORKSPACE</span>
-          <strong>{project?.name ?? "Raft Works"}</strong>
+          <span className="eyebrow">{project?.name ?? "Flock Works"}</span>
+          <strong>Chat</strong>
         </div>
         <button onClick={onClose} aria-label="Close sidebar">×</button>
       </div>
@@ -596,8 +596,10 @@ function ConversationSidebar({
 
 function Message({
   message,
+  onOpenThread,
 }: {
   message: UiMessage;
+  onOpenThread?: () => void;
 }) {
   if (message.task) {
     return (
@@ -633,12 +635,66 @@ function Message({
         </div>
         {message.text && <p>{message.text}</p>}
         {message.detail && <div className="agent-detail"><span className="pulse-dot" />{message.detail}</div>}
-        {message.thread && <button className="thread-preview"><span className="thread-lines">↳</span>{message.thread}<b>→</b></button>}
+        {message.thread && <button className="thread-preview" onClick={onOpenThread}><span className="thread-lines">↳</span>{message.thread}<b>→</b></button>}
         {message.reactions && (
           <div className="reactions">{message.reactions.map((reaction) => <button key={reaction}>{reaction}</button>)}<button>＋</button></div>
         )}
       </div>
     </article>
+  );
+}
+
+function ThreadPane({ onClose }: { onClose: () => void }) {
+  const [text, setText] = useState("");
+
+  return (
+    <aside className="thread-pane" aria-label="Thread">
+      <header className="thread-header">
+        <div><strong>Thread</strong><span>— #all</span></div>
+        <div>
+          <button title="Search thread">⌕</button>
+          <button className="view-channel">↗ View in channel</button>
+          <button aria-label="Close thread" onClick={onClose}>×</button>
+        </div>
+      </header>
+      <div className="thread-feed">
+        <article className="thread-root">
+          <PixelAvatar text="ED" color="yellow" />
+          <div>
+            <div className="message-meta"><strong>Edward</strong><span>@edward</span><time>10:02 AM</time></div>
+            <p>@shark can you verify the hub reconnect path before we invite the team?</p>
+          </div>
+        </article>
+        <div className="thread-separator"><span>Beginning of replies</span><b>3 replies</b></div>
+        <article className="thread-reply">
+          <PixelAvatar text="SH" color="blue" />
+          <div>
+            <div className="message-meta"><strong>shark</strong><StatusPill tone="agent">AGENT</StatusPill><time>10:04 AM</time></div>
+            <p>The cursor resume path is covered. I’m running one final stale-lease case now.</p>
+          </div>
+        </article>
+        <article className="thread-reply">
+          <PixelAvatar text="CI" color="purple" />
+          <div>
+            <div className="message-meta"><strong>Cindy</strong><StatusPill tone="agent">AGENT</StatusPill><time>10:07 AM</time></div>
+            <p>I’ll validate the JSONL index reconciliation after that run lands.</p>
+          </div>
+        </article>
+        <div className="thread-event"><span>10:08 AM</span> shark started checking the reconnect branch</div>
+      </div>
+      <div className="thread-composer">
+        <textarea
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          placeholder="Message thread"
+          aria-label="Message thread"
+        />
+        <div>
+          <span><button title="Attach media">▧</button><button title="Attach file">＋</button></span>
+          <button className="thread-send" disabled={!text.trim()}>↗</button>
+        </div>
+      </div>
+    </aside>
   );
 }
 
@@ -714,6 +770,7 @@ function ChannelWorkspace({
   const [muted, setMuted] = useState(false);
   const [agentMenu, setAgentMenu] = useState(false);
   const [targets, setTargets] = useState<string[]>([]);
+  const [threadOpen, setThreadOpen] = useState(true);
 
   useEffect(() => {
     setTargets((current) => {
@@ -765,6 +822,7 @@ function ChannelWorkspace({
   }
 
   return (
+    <div className={`channel-stage ${threadOpen ? "thread-open" : ""}`}>
     <main className="channel-workspace">
       <header className="channel-header">
         <button className="mobile-sidebar-toggle" onClick={onOpenSidebar}>☰</button>
@@ -813,14 +871,10 @@ function ChannelWorkspace({
       {tab === "chat" && (
         <>
           <div className="message-feed">
-            <div className="channel-intro">
-              <div className="hash-box">#</div>
-              <h2>Welcome to #all</h2>
-              <p>This is the start of the company-wide channel. Everyone and every shared agent can participate.</p>
-            </div>
+            <div className="message-start">Beginning of messages</div>
             <div className="date-separator"><span>MONDAY, JULY 27</span></div>
             <div className="system-event"><span>✦</span><p><strong>Cindy joined #all</strong> via the owner onboarding flow.</p><time>9:32 AM</time></div>
-            {[...hubMessages, ...localMessages].map((message) => <Message key={message.id} message={message} />)}
+            {[...hubMessages, ...localMessages].map((message) => <Message key={message.id} message={message} onOpenThread={() => setThreadOpen(true)} />)}
             {dispatches.filter((dispatch) => dispatch.status === "awaiting_selection").map((dispatch) => (
               <article className="branch-selector" key={dispatch.id}>
                 <div><StatusPill tone="pink">CHOOSE BRANCH</StatusPill><h3>{dispatch.text}</h3></div>
@@ -874,6 +928,8 @@ function ChannelWorkspace({
         </div>
       )}
     </main>
+    {threadOpen && <ThreadPane onClose={() => setThreadOpen(false)} />}
+    </div>
   );
 }
 
@@ -987,7 +1043,7 @@ function SettingsContent({ page, onToast }: { page: SettingKey; onToast: (messag
           <FieldRow label="Mentions and replies"><SelectField value="Immediately" /></FieldRow>
           <FieldRow label="Task assignments"><Switch defaultOn label="Task assignments" /></FieldRow>
           <FieldRow label="Agent completions"><Switch defaultOn label="Agent completions" /></FieldRow>
-          <FieldRow label="Mute Raft Works" description="Pause all non-critical alerts from this server."><Switch label="Mute Raft Works" /></FieldRow>
+          <FieldRow label="Mute Flock Works" description="Pause all non-critical alerts from this server."><Switch label="Mute Flock Works" /></FieldRow>
         </section>
         <button className="danger-outline">Disable push notifications</button>
       </>
@@ -999,11 +1055,11 @@ function SettingsContent({ page, onToast }: { page: SettingKey; onToast: (messag
       <>
         <Header kicker="WORKSPACE SETTINGS" summary="Update the public identity of this Raft server." />
         <section className="settings-card profile-card server-card">
-          <span className="server-image">R</span><div><h2>Raft Works</h2><p>18 members · 4 agents</p></div><button className="outline-button">Upload image</button>
+          <span className="server-image"><img src="/flock.png" alt="" /></span><div><h2>Flock Works</h2><p>18 members · 4 agents</p></div><button className="outline-button">Upload image</button>
         </section>
         <section className="settings-card form-card">
-          <FieldRow label="Server name"><TextField value="Raft Works" /></FieldRow>
-          <FieldRow label="Server slug" description="raft.app/"><div className="input-prefix wide"><span>raft.app/</span><TextField value="raft-works" /></div></FieldRow>
+          <FieldRow label="Server name"><TextField value="Flock Works" /></FieldRow>
+          <FieldRow label="Server slug" description="raft.app/"><div className="input-prefix wide"><span>raft.app/</span><TextField value="flock-works" /></div></FieldRow>
           <div className="form-actions"><button className="black-button" onClick={() => onToast("Server profile saved")}>Save server</button></div>
         </section>
         <section className="settings-card danger-zone"><div><span className="eyebrow">DANGER ZONE</span><h2>Delete this server</h2><p>Permanently remove every channel, message, task, agent enrollment, and file.</p></div><button>Delete Server</button></section>
@@ -1098,9 +1154,9 @@ function SettingsContent({ page, onToast }: { page: SettingKey; onToast: (messag
     return (
       <>
         <Header kicker="ABOUT" summary="Product information and the identity of your current workspace." />
-        <section className="about-hero"><span className="about-logo">R</span><div><h2>Raft</h2><p>A shared place for people and long-running agents to work together.</p><StatusPill tone="neutral">DESKTOP WEB · V0.9.4</StatusPill></div></section>
+        <section className="about-hero"><span className="about-logo"><img src="/flock.png" alt="" /></span><div><h2>Raft</h2><p>A shared place for people and long-running agents to work together.</p><StatusPill tone="neutral">DESKTOP WEB · V0.9.4</StatusPill></div></section>
         <section className="settings-card form-card">
-          <FieldRow label="Current workspace"><strong>Raft Works</strong></FieldRow>
+          <FieldRow label="Current workspace"><strong>Flock Works</strong></FieldRow>
           <FieldRow label="Workspace ID"><code>srv_raft_01J8W3YQ</code></FieldRow>
           <FieldRow label="Region"><span>US West · Los Angeles</span></FieldRow>
           <FieldRow label="Session backend"><span>Pi JSONL v3</span></FieldRow>
@@ -1145,7 +1201,7 @@ function SettingsWorkspace({
   return (
     <div className="settings-shell">
       <aside className="settings-menu">
-        <div className="settings-menu-header"><span className="eyebrow">RAFT WORKS</span><h1>Settings</h1></div>
+        <div className="settings-menu-header"><span className="eyebrow">FLOCK WORKS</span><h1>Settings</h1></div>
         <div className="settings-menu-scroll">
           {settingGroups.map((group) => (
             <section key={group.title}>
@@ -1184,7 +1240,7 @@ function UtilityPage({
   const data = {
     activity: { title: "Activity", copy: "Everything that needs your attention.", metric: "6 unread events", icon: "↗" },
     tasks: { title: "Tasks", copy: "Work assigned to you and your agents.", metric: "3 due today", icon: "✓" },
-    members: { title: "Members", copy: "People and agents across Raft Works.", metric: "18 members · 4 agents", icon: "♙" },
+    members: { title: "Members", copy: "People and agents across Flock Works.", metric: "18 members · 4 agents", icon: "♙" },
     computers: { title: "Computers", copy: "Machines connected to this server.", metric: "1 computer needs attention", icon: "▣" },
   }[active];
   if (active === "computers") {
@@ -1193,7 +1249,7 @@ function UtilityPage({
       : "";
     return (
       <main className="utility-page">
-        <div className="utility-hero"><span>{data.icon}</span><div><p className="eyebrow">RAFT WORKS</p><h1>{data.title}</h1><p>{data.copy}</p></div></div>
+        <div className="utility-hero"><span>{data.icon}</span><div><p className="eyebrow">FLOCK WORKS</p><h1>{data.title}</h1><p>{data.copy}</p></div></div>
         <section className="utility-card enrollment-card">
           <StatusPill tone="yellow">ONE-LINE INSTALL</StatusPill>
           <h2>Enroll a long-running Pi agent</h2>
@@ -1236,7 +1292,7 @@ function UtilityPage({
   }
   return (
     <main className="utility-page">
-      <div className="utility-hero"><span>{data.icon}</span><div><p className="eyebrow">RAFT WORKS</p><h1>{data.title}</h1><p>{data.copy}</p></div></div>
+      <div className="utility-hero"><span>{data.icon}</span><div><p className="eyebrow">FLOCK WORKS</p><h1>{data.title}</h1><p>{data.copy}</p></div></div>
       <section className="utility-card"><StatusPill tone="yellow">{data.metric.toUpperCase()}</StatusPill><h2>Your workspace is in sync.</h2><p>This focused view is ready for the server-backed activity stream.</p><button className="black-button">View details</button></section>
     </main>
   );
@@ -1308,7 +1364,7 @@ export default function Home() {
               {hub.projectId === project.id && <b>✓</b>}
             </button>
           ))}
-          {hub.projects.length === 0 && <button className="active"><span className="server-mark mini">R</span><div><strong>Raft Works</strong><small>Connecting…</small></div></button>}
+          {hub.projects.length === 0 && <button className="active"><span className="server-mark mini"><img src="/flock.png" alt="" /></span><div><strong>Flock Works</strong><small>Connecting…</small></div></button>}
           <button className="add-server">＋ Create or join server</button>
         </div>
       )}
