@@ -11,7 +11,6 @@ import {
   type ExecutionToolContext,
   type SessionTreeEntry,
 } from "@earendil-works/pi-agent-core/node";
-import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import type {
   AssistantMessage,
   Models,
@@ -19,6 +18,7 @@ import type {
   ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import { FlockError, toError } from "../shared/errors.ts";
+import { createFlockModels, NOUS_PROVIDER_ID } from "../shared/nous-provider.ts";
 import type { AgentConfig } from "./config.ts";
 import type { ActiveLease, JobResult } from "./client.ts";
 import { LeasedSessionStorage } from "./leased-session.ts";
@@ -30,6 +30,7 @@ export class PiAgentRunner {
   private readonly config: AgentConfig;
   private readonly mirror: SessionMirror;
   private readonly models: Models;
+  private nousCatalogRefreshed = false;
 
   constructor(
     config: AgentConfig,
@@ -38,10 +39,11 @@ export class PiAgentRunner {
   ) {
     this.config = config;
     this.mirror = mirror;
-    this.models = models ?? builtinModels({
+    this.models = models ?? createFlockModels({
       credentials: config.credentialSource === "hub"
         ? new HubCredentialStore(config.hubUrl, config.token)
         : new PiCredentialStore(),
+      seedModelIds: [config.model],
     });
   }
 
@@ -65,6 +67,15 @@ export class PiAgentRunner {
     await this.appendTurnMarker(storage, lease);
 
     const { provider, modelId } = parseModelReference(this.config.model);
+    if (provider === NOUS_PROVIDER_ID && !this.nousCatalogRefreshed) {
+      this.nousCatalogRefreshed = true;
+      try {
+        await this.models.refresh({ allowNetwork: true });
+      } catch {
+        // The hub validated and seeded this model at install time. A catalog
+        // outage must not prevent the agent from attempting inference.
+      }
+    }
     const model = this.models.getModel(provider, modelId);
     if (!model) {
       throw new FlockError("model_not_found", `Model ${this.config.model} is not available in pi-ai`);

@@ -8,6 +8,7 @@ import { ControlDatabase } from "../../src/hub/control-db.ts";
 import {
   dockerRunArguments,
   HostedAgentManager,
+  isMissingContainerError,
   type ContainerRuntime,
   type DockerRunInput,
 } from "../../src/hub/hosted-agent-manager.ts";
@@ -155,6 +156,18 @@ test("Docker arguments harden the container and expose only scoped mounts", () =
   assert.deepEqual(args.slice(-4), ["agent", "run", "--config", "/etc/flock/agent.json"]);
 });
 
+test("Docker missing-container errors are treated as an empty runtime slot", () => {
+  assert.equal(
+    isMissingContainerError({ stderr: "Error: No such container: flock-agent" }),
+    true,
+  );
+  assert.equal(
+    isMissingContainerError({ stderr: "error: no such object: flock-agent" }),
+    true,
+  );
+  assert.equal(isMissingContainerError({ stderr: "permission denied" }), false);
+});
+
 class FakeRuntime implements ContainerRuntime {
   runs: DockerRunInput[] = [];
   removed: string[] = [];
@@ -295,6 +308,131 @@ test("hosted-agent APIs create, serve scoped credentials, stop, and delete", asy
   assert.equal(hub.activeRuntime!.database.getAgent(createResponse.body.agent.id)?.status, "revoked");
 });
 
+test("Nous connection models are owner-scoped, cached, and validated before installation", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "flock-nous-hosted-api-"));
+  const runtime = new FakeRuntime();
+  let catalogRequests = 0;
+  const hub = new HubServer({
+    config: hostedConfig(directory),
+    authenticator: new TestAuthenticator(),
+    hostedAgentRuntime: runtime,
+    nousProviderOptions: {
+      fetchFn: async (url, init) => {
+        assert.equal(url.toString(), "https://inference.nous.example/v1/models");
+        assert.equal((init?.headers as Record<string, string>).Authorization, "Bearer nous-access");
+        catalogRequests += 1;
+        return new Response(JSON.stringify({
+          data: [
+            { id: "anthropic/claude-sonnet-4.6" },
+            { id: "nous/custom-agent-model" },
+          ],
+        }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    },
+  });
+  await hub.start();
+  context.after(async () => hub.stop());
+  const address = hub.address;
+  assert.ok(address);
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const projectResponse = await apiRequest<{ project: { id: string } }>(
+    baseUrl,
+    "/api/v1/projects",
+    { method: "POST", body: JSON.stringify({ name: "Nous Demo", slug: "nous-demo" }) },
+  );
+  const connection = hub.activeRuntime!.database.upsertProviderConnection({
+    userSub: "test-user",
+    providerId: "nous",
+    label: "test@example.com",
+    credential: {
+      type: "oauth",
+      access: "nous-access",
+      refresh: "nous-refresh",
+      expires: Date.now() + 60_000,
+      clientId: "flock-test",
+      portalBaseUrl: "https://portal.nous.example",
+      inferenceBaseUrl: "https://inference.nous.example/v1",
+    },
+  });
+
+  const catalog = await apiRequest<{
+    providerId: string;
+    models: Array<{ id: string; name: string }>;
+  }>(baseUrl, `/api/v1/provider-connections/${connection.id}/models`);
+  assert.equal(catalog.status, 200);
+  assert.equal(catalog.body.providerId, "nous");
+  assert.deepEqual(catalog.body.models.map((model) => model.id).sort(), [
+    "anthropic/claude-sonnet-4.6",
+    "nous/custom-agent-model",
+  ]);
+
+  const created = await apiRequest<{ agent: { id: string; model: string } }>(
+    baseUrl,
+    `/api/v1/projects/${projectResponse.body.project.id}/hosted-agents`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        name: "nous-cloud",
+        connectionId: connection.id,
+        model: "nous/anthropic/claude-sonnet-4.6",
+        thinkingLevel: "medium",
+      }),
+    },
+  );
+  assert.equal(created.status, 201);
+  assert.equal(created.body.agent.model, "nous/anthropic/claude-sonnet-4.6");
+  assert.equal(catalogRequests, 1);
+  assert.equal(runtime.runs.length, 1);
+
+  const invalid = await apiRequest(
+    baseUrl,
+    `/api/v1/projects/${projectResponse.body.project.id}/hosted-agents`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        name: "invalid-nous-cloud",
+        connectionId: connection.id,
+        model: "nous/not/in-the-catalog",
+        thinkingLevel: "medium",
+      }),
+    },
+  );
+  assert.equal(invalid.status, 400);
+  assert.equal(runtime.runs.length, 1);
+
+  const otherConnection = hub.activeRuntime!.database.upsertProviderConnection({
+    userSub: "other-user",
+    providerId: "nous",
+    label: "other@example.com",
+    credential: {
+      type: "oauth",
+      access: "other-access",
+      refresh: "other-refresh",
+      expires: Date.now() + 60_000,
+      clientId: "flock-test",
+      portalBaseUrl: "https://portal.nous.example",
+      inferenceBaseUrl: "https://inference.nous.example/v1",
+    },
+  });
+  const foreignCatalog = await apiRequest(
+    baseUrl,
+    `/api/v1/provider-connections/${otherConnection.id}/models`,
+  );
+  assert.equal(foreignCatalog.status, 403);
+  const foreignUpdate = await apiRequest(
+    baseUrl,
+    `/api/v1/hosted-agents/${created.body.agent.id}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ connectionId: otherConnection.id }),
+    },
+  );
+  assert.equal(foreignUpdate.status, 403);
+  assert.equal(runtime.runs.length, 1);
+});
+
 function hostedConfig(dataRoot: string): HubConfig {
   return {
     dataRoot,
@@ -311,6 +449,11 @@ function hostedConfig(dataRoot: string): HubConfig {
     },
     leaseMs: 10_000,
     leaderLock: false,
+    nous: {
+      clientId: "flock-test",
+      portalUrl: new URL("https://portal.nous.example"),
+      inferenceUrl: new URL("https://inference.nous.example/v1"),
+    },
     hostedAgents: {
       enabled: true,
       image: "flock-agent:test",

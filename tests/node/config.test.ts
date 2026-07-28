@@ -20,6 +20,9 @@ const managedEnvironment = [
   "FLOCK_HOSTED_AGENT_MEMORY_MB",
   "FLOCK_HOSTED_AGENT_PIDS",
   "FLOCK_HOSTED_AGENT_RETENTION_DAYS",
+  "FLOCK_NOUS_CLIENT_ID",
+  "FLOCK_NOUS_PORTAL_URL",
+  "FLOCK_NOUS_INFERENCE_URL",
 ] as const;
 
 function withEnvironment(
@@ -160,5 +163,38 @@ test("parses hosted-agent runtime limits and internal URL", () => {
       assert.equal(config.hostedAgents.pidsLimit, 512);
       assert.equal(config.hostedAgents.retentionDays, 14);
     },
+  );
+});
+
+test("enables a pinned Nous Portal client and endpoint overrides", () => {
+  withEnvironment(
+    {
+      ...baseEnvironment,
+      OIDC_ISSUER: "https://identity.example.test",
+      FLOCK_OIDC_ALLOWED_GROUP: "members",
+      FLOCK_OIDC_ADMIN_GROUP: "admins",
+      FLOCK_NOUS_CLIENT_ID: "flock-production",
+      FLOCK_NOUS_PORTAL_URL: "https://portal.nous.example",
+      FLOCK_NOUS_INFERENCE_URL: "https://inference.nous.example/v1",
+    },
+    () => {
+      const config = parseConfig();
+      assert.equal(config.nous.clientId, "flock-production");
+      assert.equal(config.nous.portalUrl.href, "https://portal.nous.example/");
+      assert.equal(config.nous.inferenceUrl.href, "https://inference.nous.example/v1");
+    },
+  );
+});
+
+test("rejects non-HTTPS Nous endpoints outside loopback", () => {
+  withEnvironment(
+    {
+      ...baseEnvironment,
+      OIDC_ISSUER: "https://identity.example.test",
+      FLOCK_OIDC_ALLOWED_GROUP: "members",
+      FLOCK_OIDC_ADMIN_GROUP: "admins",
+      FLOCK_NOUS_PORTAL_URL: "http://portal.nous.example",
+    },
+    () => assert.throws(() => parseConfig(), /FLOCK_NOUS_PORTAL_URL must use HTTPS/u),
   );
 });

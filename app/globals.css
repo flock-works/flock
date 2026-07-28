@@ -2365,6 +2365,153 @@ button {
   margin-bottom: 14px;
 }
 
+.nous-primary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 260px;
+  gap: 28px;
+}
+
+.nous-unavailable {
+  display: grid;
+  gap: 4px;
+  padding: 13px;
+  border: var(--line);
+  background: var(--cream);
+  font-size: 11px;
+}
+
+.nous-unavailable span {
+  color: var(--muted);
+}
+
+.nous-auth-panel,
+.nous-agent-builder {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: var(--line);
+  background: white;
+  box-shadow: 4px 4px 0 var(--yellow);
+}
+
+.nous-auth-panel h3,
+.nous-agent-builder h3 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.nous-auth-panel p,
+.nous-agent-builder p {
+  margin: 0;
+}
+
+.nous-auth-panel > button,
+.nous-auth-panel > a {
+  justify-self: start;
+}
+
+.nous-auth-panel > a {
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.nous-device-code {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nous-device-code code {
+  padding: 9px 12px;
+  border: var(--line);
+  background: var(--ink);
+  color: var(--yellow);
+  font-size: 17px;
+  letter-spacing: .12em;
+}
+
+.nous-builder-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.nous-builder-heading > div {
+  display: grid;
+  gap: 9px;
+}
+
+.nous-agent-builder > label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.nous-agent-builder input,
+.nous-agent-builder select {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: var(--line);
+  background: white;
+  color: var(--ink);
+  font: inherit;
+  text-transform: none;
+}
+
+.nous-agent-builder select {
+  padding: 0;
+}
+
+.nous-agent-builder option {
+  padding: 7px 9px;
+}
+
+.nous-agent-builder .nous-disclosure {
+  padding: 10px;
+  border-left: 3px solid var(--pink);
+  background: var(--cream);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.nous-error-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.nous-error-actions .form-error {
+  margin: 0;
+}
+
+.advanced-provider-panel {
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 2px solid var(--ink);
+}
+
+.advanced-provider-panel summary {
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.advanced-provider-panel[open] summary {
+  margin-bottom: 10px;
+}
+
 .cloud-agent-form {
   display: grid;
   grid-template-columns: 1.1fr 1.2fr 1.4fr .7fr;

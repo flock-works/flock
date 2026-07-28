@@ -39,6 +39,10 @@ function testConfig(dataRoot: string): HubConfig {
     },
     leaseMs: 10_000,
     leaderLock: false,
+    nous: {
+      portalUrl: new URL("https://portal.nousresearch.com"),
+      inferenceUrl: new URL("https://inference-api.nousresearch.com/v1"),
+    },
     hostedAgents: {
       enabled: false,
       image: "flock-agent:test",

@@ -39,10 +39,7 @@ export class DockerCliRuntime implements ContainerRuntime {
       const [id, running] = stdout.trim().split(/\s+/, 2);
       return id ? { id, running: running === "true" } : undefined;
     } catch (error) {
-      const stderr = typeof error === "object" && error && "stderr" in error
-        ? String((error as { stderr?: unknown }).stderr)
-        : "";
-      if (stderr.includes("No such object")) return undefined;
+      if (isMissingContainerError(error)) return undefined;
       throw error;
     }
   }
@@ -60,12 +57,16 @@ export class DockerCliRuntime implements ContainerRuntime {
     try {
       await execFileAsync("docker", ["rm", "--force", name], { timeout: 30_000 });
     } catch (error) {
-      const stderr = typeof error === "object" && error && "stderr" in error
-        ? String((error as { stderr?: unknown }).stderr)
-        : "";
-      if (!stderr.includes("No such container")) throw error;
+      if (!isMissingContainerError(error)) throw error;
     }
   }
+}
+
+export function isMissingContainerError(error: unknown): boolean {
+  const stderr = typeof error === "object" && error && "stderr" in error
+    ? String((error as { stderr?: unknown }).stderr)
+    : "";
+  return /no such (?:container|object)/iu.test(stderr);
 }
 
 export function dockerRunArguments(input: DockerRunInput): string[] {

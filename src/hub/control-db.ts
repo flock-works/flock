@@ -47,7 +47,12 @@ export type ProviderConnectionRecord = {
   lastError: string | null;
 };
 
-export type OAuthProviderId = "anthropic" | "openai-codex" | "github-copilot" | "openrouter";
+export type OAuthProviderId =
+  | "anthropic"
+  | "openai-codex"
+  | "github-copilot"
+  | "openrouter"
+  | "nous";
 export type HostedAgentDesiredState = "running" | "stopped";
 export type HostedAgentRuntimeState = "pending" | "starting" | "running" | "stopped" | "attention" | "deleted";
 

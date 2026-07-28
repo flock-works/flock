@@ -26,6 +26,7 @@ import { TestAuthenticator } from "./hub/auth.ts";
 import {
   hostedAgentConfigFromEnvironment,
   hubConfigFromEnvironment,
+  nousConfigFromEnvironment,
   type HubConfig,
 } from "./hub/config.ts";
 import { HubServer } from "./hub/hub-server.ts";
@@ -256,6 +257,7 @@ function developmentHubConfig(
     },
     leaseMs: 30_000,
     leaderLock,
+    nous: nousConfigFromEnvironment(),
     hostedAgents: hostedAgentConfigFromEnvironment(new URL(publicUrl), hostedAgents),
   };
 }

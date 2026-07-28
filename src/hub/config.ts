@@ -1,5 +1,10 @@
 import { resolve } from "node:path";
 import { FlockError } from "../shared/errors.ts";
+import {
+  configuredUrl,
+  DEFAULT_NOUS_INFERENCE_URL,
+  DEFAULT_NOUS_PORTAL_URL,
+} from "../shared/nous-provider.ts";
 
 export type HubConfig = {
   dataRoot: string;
@@ -26,6 +31,11 @@ export type HubConfig = {
   };
   leaseMs: number;
   leaderLock: boolean;
+  nous: {
+    clientId?: string;
+    portalUrl: URL;
+    inferenceUrl: URL;
+  };
   hostedAgents: {
     enabled: boolean;
     image: string;
@@ -76,6 +86,7 @@ export function hubConfigFromEnvironment(input: {
   }
 
   const hostedAgents = hostedAgentConfigFromEnvironment(publicUrl, input.hostedAgents);
+  const nous = nousConfigFromEnvironment();
 
   const issuer = new URL(required("OIDC_ISSUER"));
   const accessMode = process.env.FLOCK_OIDC_ACCESS_MODE?.trim() || "groups";
@@ -127,8 +138,33 @@ export function hubConfigFromEnvironment(input: {
     },
     leaseMs,
     leaderLock: input.leaderLock ?? true,
+    nous,
     hostedAgents,
   };
+}
+
+export function nousConfigFromEnvironment(): HubConfig["nous"] {
+  try {
+    const clientId = process.env.FLOCK_NOUS_CLIENT_ID?.trim() || undefined;
+    return {
+      clientId,
+      portalUrl: new URL(configuredUrl(
+        process.env.FLOCK_NOUS_PORTAL_URL,
+        DEFAULT_NOUS_PORTAL_URL,
+        "FLOCK_NOUS_PORTAL_URL",
+      )),
+      inferenceUrl: new URL(configuredUrl(
+        process.env.FLOCK_NOUS_INFERENCE_URL,
+        DEFAULT_NOUS_INFERENCE_URL,
+        "FLOCK_NOUS_INFERENCE_URL",
+      )),
+    };
+  } catch (error) {
+    throw new FlockError(
+      "invalid_configuration",
+      error instanceof Error ? error.message : "Nous Portal configuration is invalid",
+    );
+  }
 }
 
 export function hostedAgentConfigFromEnvironment(

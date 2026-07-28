@@ -76,6 +76,7 @@ type HubAgent = {
 type LlmProvider = {
   id: string;
   name: string;
+  modelSource: "static" | "connection";
   models: Array<{ id: string; name: string }>;
 };
 
@@ -102,7 +103,14 @@ type OAuthFlow = {
     placeholder?: string;
     options?: Array<{ id: string; label: string }>;
   } | null;
+  connection: ProviderConnection | null;
   error: string | null;
+};
+
+type ProviderLoginOptions = {
+  signal?: AbortSignal;
+  portalWindow?: Window | null;
+  onFlow?: (flow: OAuthFlow) => void;
 };
 
 type HubJob = {
@@ -258,6 +266,7 @@ function useHubState() {
   const [llmProviders, setLlmProviders] = useState<LlmProvider[]>([]);
   const [providerConnections, setProviderConnections] = useState<ProviderConnection[]>([]);
   const [hostedAgentsEnabled, setHostedAgentsEnabled] = useState(false);
+  const [nousPortalEnabled, setNousPortalEnabled] = useState(false);
 
   const fetchJson = useCallback(async <Value,>(path: string, init?: RequestInit): Promise<Value> => {
     const response = await fetch(path, {
@@ -293,7 +302,11 @@ function useHubState() {
     void Promise.all([
       fetchJson<{ user: HubIdentity }>("/api/v1/me"),
       fetchJson<{ projects: HubProject[] }>("/api/v1/projects"),
-      fetchJson<{ hostedAgentsEnabled: boolean; providers: LlmProvider[] }>("/api/v1/llm/providers"),
+      fetchJson<{
+        hostedAgentsEnabled: boolean;
+        nousPortalEnabled: boolean;
+        providers: LlmProvider[];
+      }>("/api/v1/llm/providers"),
       fetchJson<{ connections: ProviderConnection[] }>("/api/v1/provider-connections"),
     ])
       .then(([me, projectResult, providerResult, connectionResult]) => {
@@ -302,6 +315,7 @@ function useHubState() {
         setProjects(projectResult.projects);
         setProjectId((current) => current ?? projectResult.projects[0]?.id ?? null);
         setHostedAgentsEnabled(providerResult.hostedAgentsEnabled);
+        setNousPortalEnabled(providerResult.nousPortalEnabled);
         setLlmProviders(providerResult.providers);
         setProviderConnections(connectionResult.connections);
         setConnection("live");
@@ -428,9 +442,13 @@ function useHubState() {
   const refreshConnections = useCallback(async () => {
     const result = await fetchJson<{ connections: ProviderConnection[] }>("/api/v1/provider-connections");
     setProviderConnections(result.connections);
+    return result.connections;
   }, [fetchJson]);
 
-  const connectProvider = useCallback(async (providerId: string) => {
+  const connectProvider = useCallback(async (
+    providerId: string,
+    options: ProviderLoginOptions = {},
+  ): Promise<ProviderConnection> => {
     const started = await fetchJson<{ flow: OAuthFlow }>(
       `/api/v1/provider-connections/${encodeURIComponent(providerId)}/login`,
       { method: "POST", body: "{}" },
@@ -439,13 +457,28 @@ function useHubState() {
     let handledEvents = 0;
     let handledPrompt = "";
     while (flow.status === "running") {
+      options.onFlow?.(flow);
+      if (options.signal?.aborted) {
+        await fetchJson(`/api/v1/oauth-flows/${encodeURIComponent(flow.id)}`, { method: "DELETE" });
+        throw new Error("Provider sign-in was cancelled");
+      }
       for (const event of flow.events.slice(handledEvents)) {
         if (event.type === "auth_url") {
-          window.open(event.url, "_blank", "noopener,noreferrer");
+          if (options.portalWindow && !options.portalWindow.closed) {
+            options.portalWindow.location.assign(event.url);
+          } else {
+            window.open(event.url, "_blank", "noopener,noreferrer");
+          }
         } else if (event.type === "device_code") {
           await navigator.clipboard.writeText(event.userCode).catch(() => undefined);
-          window.open(event.verificationUri, "_blank", "noopener,noreferrer");
-          window.alert(`Enter code ${event.userCode} in the provider window. The code was copied.`);
+          if (options.portalWindow && !options.portalWindow.closed) {
+            options.portalWindow.location.assign(event.verificationUri);
+          } else if (!options.onFlow) {
+            window.open(event.verificationUri, "_blank", "noopener,noreferrer");
+          }
+          if (!options.onFlow) {
+            window.alert(`Enter code ${event.userCode} in the provider window. The code was copied.`);
+          }
         }
       }
       handledEvents = flow.events.length;
@@ -471,9 +504,20 @@ function useHubState() {
         `/api/v1/oauth-flows/${encodeURIComponent(flow.id)}`,
       )).flow;
     }
+    options.onFlow?.(flow);
     if (flow.status !== "completed") throw new Error(flow.error ?? "Provider sign-in did not complete");
-    await refreshConnections();
+    const connections = await refreshConnections();
+    const connection = flow.connection
+      ?? connections.find((candidate) => candidate.providerId === providerId);
+    if (!connection) throw new Error("Provider sign-in completed without a connection");
+    return connection;
   }, [fetchJson, refreshConnections]);
+
+  const loadConnectionModels = useCallback(async (connectionId: string) => {
+    return fetchJson<{ providerId: string; models: Array<{ id: string; name: string }> }>(
+      `/api/v1/provider-connections/${encodeURIComponent(connectionId)}/models`,
+    );
+  }, [fetchJson]);
 
   const createHostedAgent = useCallback(async (input: {
     name: string;
@@ -531,7 +575,9 @@ function useHubState() {
     llmProviders,
     providerConnections,
     hostedAgentsEnabled,
+    nousPortalEnabled,
     connectProvider,
+    loadConnectionModels,
     createHostedAgent,
     updateHostedAgent,
     deleteHostedAgent,
@@ -1435,9 +1481,11 @@ function UtilityPage({
   agents = [],
   onCreateEnrollment,
   hostedAgentsEnabled = false,
+  nousPortalEnabled = false,
   providers = [],
   providerConnections = [],
   onConnectProvider,
+  onLoadConnectionModels,
   onCreateHostedAgent,
   onUpdateHostedAgent,
   onDeleteHostedAgent,
@@ -1447,9 +1495,16 @@ function UtilityPage({
   agents?: HubAgent[];
   onCreateEnrollment?: (name: string) => Promise<{ secret: string; expiresAt: string }>;
   hostedAgentsEnabled?: boolean;
+  nousPortalEnabled?: boolean;
   providers?: LlmProvider[];
   providerConnections?: ProviderConnection[];
-  onConnectProvider?: (providerId: string) => Promise<void>;
+  onConnectProvider?: (
+    providerId: string,
+    options?: ProviderLoginOptions,
+  ) => Promise<ProviderConnection>;
+  onLoadConnectionModels?: (
+    connectionId: string,
+  ) => Promise<{ providerId: string; models: Array<{ id: string; name: string }> }>;
   onCreateHostedAgent?: (input: {
     name: string;
     connectionId: string;
@@ -1478,8 +1533,21 @@ function UtilityPage({
   const [cloudConsent, setCloudConsent] = useState(false);
   const [cloudBusy, setCloudBusy] = useState(false);
   const [cloudError, setCloudError] = useState("");
-  const effectiveConnectionId = cloudConnectionId || providerConnections[0]?.id || "";
-  const selectedConnection = providerConnections.find((item) => item.id === effectiveConnectionId);
+  const [nousStage, setNousStage] = useState<"idle" | "auth" | "configure" | "installing">("idle");
+  const [nousFlow, setNousFlow] = useState<OAuthFlow | null>(null);
+  const [nousAbort, setNousAbort] = useState<AbortController | null>(null);
+  const [nousConnectionId, setNousConnectionId] = useState("");
+  const [nousModels, setNousModels] = useState<Array<{ id: string; name: string }>>([]);
+  const [nousModel, setNousModel] = useState("");
+  const [nousSearch, setNousSearch] = useState("");
+  const [nousName, setNousName] = useState("");
+  const [nousError, setNousError] = useState("");
+  const [nousEditingAgent, setNousEditingAgent] = useState<HubAgent | null>(null);
+  const advancedConnections = providerConnections.filter(
+    (connection) => connection.providerId !== "nous",
+  );
+  const effectiveConnectionId = cloudConnectionId || advancedConnections[0]?.id || "";
+  const selectedConnection = advancedConnections.find((item) => item.id === effectiveConnectionId);
   const selectedProvider = providers.find((provider) => provider.id === selectedConnection?.providerId);
   const effectiveModel = selectedProvider?.models.some(
     (model) => `${selectedProvider.id}/${model.id}` === cloudModel,
@@ -1488,6 +1556,101 @@ function UtilityPage({
     : selectedProvider?.models[0]
       ? `${selectedProvider.id}/${selectedProvider.models[0].id}`
       : "";
+  const nousDevice = [...(nousFlow?.events ?? [])].reverse().find(
+    (event) => event.type === "device_code",
+  );
+  const filteredNousModels = nousModels.filter((model) => {
+    const query = nousSearch.trim().toLowerCase();
+    return !query || model.id.toLowerCase().includes(query) || model.name.toLowerCase().includes(query);
+  });
+  const visibleNousModel = filteredNousModels.some((model) => model.id === nousModel)
+    ? nousModel
+    : "";
+
+  async function beginNousFlow(
+    editingAgent: HubAgent | null = null,
+    forceReconnect = false,
+  ) {
+    if (!onConnectProvider || !onLoadConnectionModels) return;
+    setNousError("");
+    setCloudError("");
+    setNousEditingAgent(editingAgent);
+    setNousName(editingAgent?.name ?? "");
+    setNousSearch("");
+    setNousModels([]);
+    setNousModel("");
+    let connection = forceReconnect
+      ? undefined
+      : providerConnections.find(
+          (candidate) => candidate.providerId === "nous" && candidate.status === "connected",
+        );
+    try {
+      if (!connection) {
+        setNousStage("auth");
+        const controller = new AbortController();
+        setNousAbort(controller);
+        const portalWindow = window.open("about:blank", "flock-nous-portal");
+        if (portalWindow) portalWindow.opener = null;
+        connection = await onConnectProvider("nous", {
+          signal: controller.signal,
+          portalWindow,
+          onFlow: setNousFlow,
+        });
+      }
+      setNousConnectionId(connection.id);
+      const catalog = await onLoadConnectionModels(connection.id);
+      const currentModel = editingAgent?.model.startsWith("nous/")
+        ? editingAgent.model.slice("nous/".length)
+        : "";
+      setNousModels(catalog.models);
+      setNousModel(
+        catalog.models.some((model) => model.id === currentModel)
+          ? currentModel
+          : catalog.models[0]?.id ?? "",
+      );
+      setNousFlow(null);
+      setNousAbort(null);
+      setNousStage("configure");
+    } catch (error) {
+      setNousAbort(null);
+      setNousStage("idle");
+      setNousError(error instanceof Error ? error.message : "Nous Portal setup failed");
+    }
+  }
+
+  async function submitNousAgent() {
+    if (!nousConnectionId || !nousModel) return;
+    if (!nousEditingAgent && !nousName.trim()) {
+      setNousError("Enter an agent name.");
+      return;
+    }
+    setNousStage("installing");
+    setNousError("");
+    try {
+      if (nousEditingAgent) {
+        await onUpdateHostedAgent?.(nousEditingAgent.id, {
+          connectionId: nousConnectionId,
+          model: `nous/${nousModel}`,
+          thinkingLevel: "medium",
+        });
+      } else {
+        await onCreateHostedAgent?.({
+          name: nousName.trim(),
+          connectionId: nousConnectionId,
+          model: `nous/${nousModel}`,
+          thinkingLevel: "medium",
+        });
+      }
+      setNousStage("idle");
+      setNousEditingAgent(null);
+      setNousName("");
+      setNousModels([]);
+      setNousModel("");
+    } catch (error) {
+      setNousStage("configure");
+      setNousError(error instanceof Error ? error.message : "Could not install the Nous agent");
+    }
+  }
   const data = {
     activity: { title: "Activity", copy: "Everything that needs your attention.", metric: "6 unread events", icon: "↗" },
     tasks: { title: "Tasks", copy: "Work assigned to you and your agents.", metric: "3 due today", icon: "✓" },
@@ -1505,85 +1668,227 @@ function UtilityPage({
       <main className="utility-page">
         <div className="utility-hero"><span>{data.icon}</span><div><p className="eyebrow">FLOCK WORKS</p><h1>{data.title}</h1><p>{data.copy}</p></div></div>
         <section className="utility-card enrollment-card">
-          <StatusPill tone={hostedAgentsEnabled ? "green" : "neutral"}>CLOUD AGENT</StatusPill>
+          <StatusPill tone={hostedAgentsEnabled && nousPortalEnabled ? "green" : "neutral"}>NOUS HOSTED AGENT</StatusPill>
           <h2>Create an agent on this hub</h2>
           {hostedAgentsEnabled ? (
             <>
-              <p>Give the agent a persistent isolated workspace and connect a subscription provider.</p>
-              <div className="provider-connect-list">
-                {providers.map((provider) => {
-                  const connected = providerConnections.some(
-                    (connection) => connection.providerId === provider.id && connection.status === "connected",
-                  );
-                  return (
+              <p>Sign in once with Nous Portal, choose any model available to your account, and install an isolated agent on this hub.</p>
+              {!nousPortalEnabled ? (
+                <div className="nous-unavailable">
+                  <strong>Nous Portal is not configured.</strong>
+                  <span>
+                    {isAdmin
+                      ? "Set FLOCK_NOUS_CLIENT_ID to the client ID issued for this Flock hub."
+                      : "Ask a hub administrator to configure the Nous Portal connection."}
+                  </span>
+                </div>
+              ) : nousStage === "auth" ? (
+                <div className="nous-auth-panel" aria-live="polite">
+                  <StatusPill tone="yellow">WAITING FOR PORTAL</StatusPill>
+                  <h3>Approve access in Nous Portal</h3>
+                  {nousDevice?.type === "device_code" ? (
+                    <>
+                      <p>Enter this code if the Portal does not fill it automatically.</p>
+                      <div className="nous-device-code">
+                        <code>{nousDevice.userCode}</code>
+                        <button
+                          className="outline-button"
+                          onClick={() => void navigator.clipboard.writeText(nousDevice.userCode)}
+                        >
+                          Copy
+                        </button>
+                      </div>
+                      <a href={nousDevice.verificationUri} target="_blank" rel="noreferrer">
+                        Open Nous Portal ↗
+                      </a>
+                    </>
+                  ) : (
+                    <p>Preparing a secure Nous Portal sign-in…</p>
+                  )}
+                  <button
+                    className="outline-button"
+                    onClick={() => {
+                      nousAbort?.abort();
+                      setNousStage("idle");
+                      setNousFlow(null);
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : ["configure", "installing"].includes(nousStage) ? (
+                <div className="nous-agent-builder">
+                  <div className="nous-builder-heading">
+                    <div>
+                      <StatusPill tone="green">PORTAL CONNECTED</StatusPill>
+                      <h3>{nousEditingAgent ? `Configure ${nousEditingAgent.name}` : "Choose the agent"}</h3>
+                    </div>
                     <button
-                      className={connected ? "outline-button" : "black-button"}
-                      key={provider.id}
-                      disabled={cloudBusy}
+                      className="outline-button"
+                      disabled={nousStage === "installing"}
                       onClick={() => {
-                        setCloudBusy(true);
-                        setCloudError("");
-                        void onConnectProvider?.(provider.id)
-                          .catch((error: unknown) => setCloudError(error instanceof Error ? error.message : "Sign-in failed"))
-                          .finally(() => setCloudBusy(false));
+                        setNousStage("idle");
+                        setNousEditingAgent(null);
                       }}
                     >
-                      {connected ? `Reconnect ${provider.name}` : `Connect ${provider.name}`}
+                      Close
                     </button>
-                  );
-                })}
-              </div>
-              <div className="cloud-agent-form">
-                <input value={cloudName} onChange={(event) => setCloudName(event.target.value)} placeholder="Agent name" />
-                <select value={effectiveConnectionId} onChange={(event) => {
-                  setCloudConnectionId(event.target.value);
-                  setCloudModel("");
-                }}>
-                  <option value="">Choose a connected account</option>
-                  {providerConnections.filter((item) => item.status === "connected").map((item) => (
-                    <option value={item.id} key={item.id}>{item.providerId} · {item.label}</option>
-                  ))}
-                </select>
-                <select value={effectiveModel} onChange={(event) => setCloudModel(event.target.value)}>
-                  {selectedProvider?.models.map((model) => (
-                    <option value={`${selectedProvider.id}/${model.id}`} key={model.id}>{model.name}</option>
-                  ))}
-                </select>
-                <select value={cloudThinking} onChange={(event) => setCloudThinking(event.target.value)}>
-                  {["off", "low", "medium", "high", "xhigh"].map((level) => <option key={level}>{level}</option>)}
-                </select>
-              </div>
-              <label className="cloud-consent">
-                <input type="checkbox" checked={cloudConsent} onChange={(event) => setCloudConsent(event.target.checked)} />
-                <span>Project members may use this agent and consume the assigned account’s allowance.</span>
-              </label>
-              <button
-                className="black-button"
-                disabled={cloudBusy || !cloudConsent || !effectiveConnectionId || !effectiveModel}
-                onClick={() => {
-                  setCloudBusy(true);
-                  setCloudError("");
-                  void onCreateHostedAgent?.({
-                    name: cloudName.trim() || "cloud-agent",
-                    connectionId: effectiveConnectionId,
-                    model: effectiveModel,
-                    thinkingLevel: cloudThinking,
-                  })
-                    .then(() => {
-                      setCloudName("");
-                      setCloudConsent(false);
+                  </div>
+                  {!nousEditingAgent && (
+                    <label>
+                      Agent name
+                      <input
+                        autoFocus
+                        value={nousName}
+                        onChange={(event) => setNousName(event.target.value)}
+                        placeholder="e.g. shark"
+                        maxLength={64}
+                      />
+                    </label>
+                  )}
+                  <label>
+                    Search models
+                    <input
+                      value={nousSearch}
+                      onChange={(event) => setNousSearch(event.target.value)}
+                      placeholder="Search by model or provider"
+                    />
+                  </label>
+                  <label>
+                    Model
+                    <select
+                      size={Math.min(8, Math.max(3, filteredNousModels.length))}
+                      value={visibleNousModel}
+                      onChange={(event) => setNousModel(event.target.value)}
+                    >
+                      {filteredNousModels.map((model) => (
+                        <option value={model.id} key={model.id}>{model.name} · {model.id}</option>
+                      ))}
+                    </select>
+                  </label>
+                  {filteredNousModels.length === 0 && (
+                    <p className="form-error">No models match “{nousSearch}”.</p>
+                  )}
+                  <p className="nous-disclosure">
+                    Project members may dispatch work to this agent and consume the connected Nous account’s allowance.
+                    Thinking is set to medium.
+                  </p>
+                  <button
+                    className="black-button"
+                    disabled={
+                      nousStage === "installing"
+                      || !visibleNousModel
+                      || (!nousEditingAgent && !nousName.trim())
+                    }
+                    onClick={() => void submitNousAgent()}
+                  >
+                    {nousStage === "installing"
+                      ? "Installing on hub…"
+                      : nousEditingAgent
+                        ? "Update agent"
+                        : "Create agent on this hub"}
+                  </button>
+                </div>
+              ) : (
+                <button
+                  className="black-button nous-primary-button"
+                  onClick={() => void beginNousFlow()}
+                >
+                  Create an agent on this hub <span>→</span>
+                </button>
+              )}
+              {nousError && (
+                <div className="nous-error-actions">
+                  <p className="form-error">{nousError}</p>
+                  {nousPortalEnabled && (
+                    <button
+                      className="outline-button"
+                      onClick={() => void beginNousFlow(nousEditingAgent, true)}
+                    >
+                      Reconnect Nous Portal
+                    </button>
+                  )}
+                </div>
+              )}
+
+              <details className="advanced-provider-panel">
+                <summary>Advanced providers</summary>
+                <p>Connect a provider directly and choose its account, model, and thinking level.</p>
+                <div className="provider-connect-list">
+                  {providers.filter((provider) => provider.id !== "nous").map((provider) => {
+                    const connected = advancedConnections.some(
+                      (connection) => connection.providerId === provider.id && connection.status === "connected",
+                    );
+                    return (
+                      <button
+                        className={connected ? "outline-button" : "black-button"}
+                        key={provider.id}
+                        disabled={cloudBusy}
+                        onClick={() => {
+                          setCloudBusy(true);
+                          setCloudError("");
+                          void onConnectProvider?.(provider.id)
+                            .catch((error: unknown) => setCloudError(error instanceof Error ? error.message : "Sign-in failed"))
+                            .finally(() => setCloudBusy(false));
+                        }}
+                      >
+                        {connected ? `Reconnect ${provider.name}` : `Connect ${provider.name}`}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="cloud-agent-form">
+                  <input value={cloudName} onChange={(event) => setCloudName(event.target.value)} placeholder="Agent name" />
+                  <select value={effectiveConnectionId} onChange={(event) => {
+                    setCloudConnectionId(event.target.value);
+                    setCloudModel("");
+                  }}>
+                    <option value="">Choose a connected account</option>
+                    {advancedConnections.filter((item) => item.status === "connected").map((item) => (
+                      <option value={item.id} key={item.id}>{item.providerId} · {item.label}</option>
+                    ))}
+                  </select>
+                  <select value={effectiveModel} onChange={(event) => setCloudModel(event.target.value)}>
+                    {selectedProvider?.models.map((model) => (
+                      <option value={`${selectedProvider.id}/${model.id}`} key={model.id}>{model.name}</option>
+                    ))}
+                  </select>
+                  <select value={cloudThinking} onChange={(event) => setCloudThinking(event.target.value)}>
+                    {["off", "low", "medium", "high", "xhigh"].map((level) => <option key={level}>{level}</option>)}
+                  </select>
+                </div>
+                <label className="cloud-consent">
+                  <input type="checkbox" checked={cloudConsent} onChange={(event) => setCloudConsent(event.target.checked)} />
+                  <span>Project members may use this agent and consume the assigned account’s allowance.</span>
+                </label>
+                <button
+                  className="black-button"
+                  disabled={cloudBusy || !cloudConsent || !effectiveConnectionId || !effectiveModel}
+                  onClick={() => {
+                    setCloudBusy(true);
+                    setCloudError("");
+                    void onCreateHostedAgent?.({
+                      name: cloudName.trim() || "cloud-agent",
+                      connectionId: effectiveConnectionId,
+                      model: effectiveModel,
+                      thinkingLevel: cloudThinking,
                     })
-                    .catch((error: unknown) => setCloudError(error instanceof Error ? error.message : "Could not create agent"))
-                    .finally(() => setCloudBusy(false));
-                }}
-              >
-                {cloudBusy ? "Working…" : "Create cloud agent"}
-              </button>
+                      .then(() => {
+                        setCloudName("");
+                        setCloudConsent(false);
+                      })
+                      .catch((error: unknown) => setCloudError(error instanceof Error ? error.message : "Could not create agent"))
+                      .finally(() => setCloudBusy(false));
+                  }}
+                >
+                  {cloudBusy ? "Working…" : "Create advanced agent"}
+                </button>
+                {cloudError && <p className="form-error">{cloudError}</p>}
+              </details>
             </>
           ) : (
             <p>Hosted agents are disabled. An administrator can enable the Docker runtime in hub configuration.</p>
           )}
-          {cloudError && <p className="form-error">{cloudError}</p>}
         </section>
         {isAdmin ? (
           <section className="utility-card enrollment-card">
@@ -1637,22 +1942,26 @@ function UtilityPage({
                   <button
                     className="outline-button"
                     onClick={() => {
+                      if (agent.hosting?.providerId === "nous") {
+                        void beginNousFlow(agent);
+                        return;
+                      }
                       const ownedDefault = providerConnections.find(
                         (connection) => connection.id === agent.hosting?.connectionId,
-                      ) ?? providerConnections.find((connection) => connection.status === "connected");
+                      ) ?? advancedConnections.find((connection) => connection.status === "connected");
                       if (!ownedDefault) {
                         setCloudError("Connect one of your own provider accounts before reconfiguring this agent.");
                         return;
                       }
                       const connectionId = window.prompt(
-                        `Assign one of your connection IDs:\n${providerConnections
+                        `Assign one of your connection IDs:\n${advancedConnections
                           .filter((connection) => connection.status === "connected")
                           .map((connection) => `${connection.id} — ${connection.providerId} · ${connection.label}`)
                           .join("\n")}`,
                         ownedDefault.id,
                       );
                       if (!connectionId) return;
-                      const connection = providerConnections.find((item) => item.id === connectionId);
+                      const connection = advancedConnections.find((item) => item.id === connectionId);
                       const provider = providers.find((item) => item.id === connection?.providerId);
                       if (!connection || !provider) {
                         setCloudError("Choose a valid connected account.");
@@ -1736,9 +2045,11 @@ export default function Home() {
           agents={hub.agents}
           onCreateEnrollment={hub.createEnrollment}
           hostedAgentsEnabled={hub.hostedAgentsEnabled}
+          nousPortalEnabled={hub.nousPortalEnabled}
           providers={hub.llmProviders}
           providerConnections={hub.providerConnections}
           onConnectProvider={hub.connectProvider}
+          onLoadConnectionModels={hub.loadConnectionModels}
           onCreateHostedAgent={hub.createHostedAgent}
           onUpdateHostedAgent={hub.updateHostedAgent}
           onDeleteHostedAgent={hub.deleteHostedAgent}
@@ -1768,7 +2079,6 @@ export default function Home() {
         />
       </>
     );
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeNav, channel, setting, sidebarOpen, hub]);
 
   function showToast(message: string) {

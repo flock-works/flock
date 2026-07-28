@@ -131,6 +131,10 @@ test("removes the persisted web session on logout", async () => {
     },
     leaseMs: 30_000,
     leaderLock: false,
+    nous: {
+      portalUrl: new URL("https://portal.nousresearch.com"),
+      inferenceUrl: new URL("https://inference-api.nousresearch.com/v1"),
+    },
     hostedAgents: {
       enabled: false,
       image: "flock-agent:test",

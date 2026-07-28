@@ -152,6 +152,7 @@ remain stable across restarts and HA nodes:
 ```bash
 export FLOCK_HOSTED_AGENT_CREDENTIAL_KEY="$(openssl rand -base64 32)"
 export FLOCK_HOSTED_AGENT_INTERNAL_HUB_URL="https://flock.example.com"
+export FLOCK_NOUS_CLIENT_ID="your-nous-issued-flock-client-id"
 flock hub serve --hosted-agents --data /srv/flock --listen 0.0.0.0:4747 --public-url https://flock.example.com
 ```
 
@@ -159,11 +160,24 @@ For a loopback development hub, set the internal URL to
 `http://host.docker.internal:4747`; the runtime adds the corresponding host
 gateway mapping on Linux.
 
-The **Computers** page can then connect Anthropic, OpenAI Codex, GitHub
-Copilot, or OpenRouter and create a cloud agent. Each agent receives a durable
-empty workspace under `hosted-agents/<agent-id>/workspace`. The assigned
-account and owner are visible to project members because any member may
-dispatch work that consumes that account.
+The **Computers** page starts with a guided Nous Portal flow. A member clicks
+**Create an agent on this hub**, approves the device-code login in Nous Portal,
+searches the models available to that account, names the agent, and installs
+it on the hub. `FLOCK_NOUS_CLIENT_ID` must be a client ID issued for Flock;
+Flock does not reuse another application's public OAuth client. The optional
+`FLOCK_NOUS_PORTAL_URL` and `FLOCK_NOUS_INFERENCE_URL` overrides are intended
+for staging and testing and default to Nous production.
+
+Nous access and refresh tokens remain encrypted in `control.sqlite`. The
+container receives only its Flock agent credential and requests short-lived
+provider access from the hub; no permanent Nous key is written to its mounted
+configuration. Anthropic, OpenAI Codex, GitHub Copilot, and OpenRouter remain
+available under **Advanced providers**.
+
+Each hosted agent receives a durable empty workspace under
+`hosted-agents/<agent-id>/workspace`. The assigned account and owner are
+visible to project members because any member may dispatch work that consumes
+that account.
 
 Runtime settings can be adjusted with:
 
