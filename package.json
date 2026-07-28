@@ -8,7 +8,7 @@
     "url": "git+https://github.com/flock-works/flock.git"
   },
   "bin": {
-    "flock": "./dist-node/cli.js"
+    "flock": "dist-node/cli.js"
   },
   "files": [
     "dist-node",
