@@ -22,6 +22,74 @@ HTTPS, and group mapping:
 FLOCK_COOKIE_SECRET="$(openssl rand -hex 32)" OIDC_ISSUER="https://id.example.com" OIDC_CLIENT_ID="flock" OIDC_CLIENT_SECRET="…" FLOCK_OIDC_ALLOWED_GROUP="flock-members" FLOCK_OIDC_ADMIN_GROUP="flock-admins" npx --yes @flock-works/flock@latest hub serve --data /srv/flock --listen 0.0.0.0:4747 --public-url https://flock.example.com
 ```
 
+### Sign in with Google
+
+Flock can also accept any verified Google account while reserving administrator
+controls for explicitly configured email addresses. Create a **Web application**
+OAuth client in Google Cloud and register this exact authorized redirect URI:
+
+```text
+https://flock.example.com/api/v1/auth/callback
+```
+
+The scheme, hostname, port, path, and trailing slash must match the
+`--public-url` callback exactly. Keep the Google client secret outside the
+repository, then start the hub with Google-open access:
+
+```bash
+FLOCK_COOKIE_SECRET="$(openssl rand -hex 32)" FLOCK_OIDC_ACCESS_MODE="google-open" FLOCK_OIDC_ADMIN_EMAILS="owner@example.com,admin@example.com" OIDC_ISSUER="https://accounts.google.com" OIDC_CLIENT_ID="your-client-id.apps.googleusercontent.com" OIDC_CLIENT_SECRET="…" npx --yes @flock-works/flock@latest hub serve --data /srv/flock --listen 0.0.0.0:4747 --public-url https://flock.example.com
+```
+
+Every Google identity must include a verified email. Addresses listed in
+`FLOCK_OIDC_ADMIN_EMAILS` are matched case-insensitively and receive the
+`admin` role; all other verified Google users receive the `member` role. The
+hub refuses to start in `google-open` mode if the issuer is not Google or the
+administrator list is empty. Group-based OIDC remains the default when
+`FLOCK_OIDC_ACCESS_MODE` is unset.
+
+For local Google sign-in, add
+`http://localhost:4747/api/v1/auth/callback` as an authorized redirect URI in
+the same Google OAuth client. Then create the ignored local environment file
+and replace its placeholders:
+
+```bash
+cp .env.google.example .env.google
+openssl rand -hex 32
+```
+
+Paste the generated value into `FLOCK_COOKIE_SECRET` in `.env.google`, then run:
+
+```bash
+npm run build
+npm run dev:hub:google
+```
+
+Open `http://localhost:4747`. The hostname must remain `localhost` because the
+Google redirect URI must match exactly.
+
+### Publish through Cloudflare Tunnel
+
+Cloudflare Tunnel can expose the complete Node hub without opening an inbound
+port. This keeps SQLite and canonical JSONL data on the hub machine, so the
+machine and its `cloudflared` connector must remain online:
+
+```bash
+cloudflared tunnel create flock
+cloudflared tunnel route dns flock flock.example.com
+```
+
+Point the tunnel ingress at `http://127.0.0.1:4747`, set
+`FLOCK_PUBLIC_URL=https://flock.example.com`, and add the matching Google
+callback:
+
+```text
+https://flock.example.com/api/v1/auth/callback
+```
+
+Flock accepts `FLOCK_PUBLIC_URL` as the default for `hub serve`; an explicit
+`--public-url` still takes precedence. Run both the hub and connector under the
+platform's service manager so they restart after login or reboot.
+
 The hub creates the first `Flock Works` project automatically. Open the web app,
 choose **Computers**, enter an agent name, and create a single-use enrollment
 token.
@@ -69,6 +137,48 @@ npx --yes @flock-works/flock@latest agent uninstall
 `uninstall` removes only the service. It keeps the protected agent identity and
 session mirror.
 
+## Host agents on the hub
+
+Hosted agents are optional and require Docker Engine. Build the runtime image:
+
+```bash
+npm run build:agent-image
+```
+
+Enable the feature with a dedicated 32-byte encryption key. The key protects
+OAuth credentials and hosted-agent bearer tokens in `control.sqlite` and must
+remain stable across restarts and HA nodes:
+
+```bash
+export FLOCK_HOSTED_AGENT_CREDENTIAL_KEY="$(openssl rand -base64 32)"
+export FLOCK_HOSTED_AGENT_INTERNAL_HUB_URL="https://flock.example.com"
+flock hub serve --hosted-agents --data /srv/flock --listen 0.0.0.0:4747 --public-url https://flock.example.com
+```
+
+For a loopback development hub, set the internal URL to
+`http://host.docker.internal:4747`; the runtime adds the corresponding host
+gateway mapping on Linux.
+
+The **Computers** page can then connect Anthropic, OpenAI Codex, GitHub
+Copilot, or OpenRouter and create a cloud agent. Each agent receives a durable
+empty workspace under `hosted-agents/<agent-id>/workspace`. The assigned
+account and owner are visible to project members because any member may
+dispatch work that consumes that account.
+
+Runtime settings can be adjusted with:
+
+- `FLOCK_HOSTED_AGENT_IMAGE` (default `flock-agent:latest`)
+- `FLOCK_HOSTED_AGENT_CPUS` (default `1`)
+- `FLOCK_HOSTED_AGENT_MEMORY_MB` (default `2048`)
+- `FLOCK_HOSTED_AGENT_PIDS` (default `256`)
+- `FLOCK_HOSTED_AGENT_RETENTION_DAYS` (default `7`)
+
+Containers have a read-only root filesystem, no Linux capabilities, no inbound
+ports, explicit CPU/memory/PID limits, and mounts only for their protected
+configuration, private state, and workspace. Deleting an agent removes its
+container immediately and purges its retained workspace after the configured
+recovery window.
+
 ## Data model and recovery
 
 - `projects/<project-id>/session.jsonl` is the canonical, fsynced Pi v3 tree.
@@ -92,6 +202,11 @@ npm install
 npm test
 npm run dev:hub
 ```
+
+`npm run dev:hub` uses a loopback-only development identity so the complete
+landing page, API, and workspace can be exercised locally without production
+OAuth credentials. Google sign-in is used when the hub starts without
+`--dev-auth` and the production OIDC environment is configured.
 
 The test suite checks upstream Pi JSONL compatibility, tree branches and cursors,
 torn-tail repair, enrollment and authentication, dispatch leasing and stale

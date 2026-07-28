@@ -24,16 +24,19 @@
   },
   "scripts": {
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext dev",
-    "dev:hub": "tsx src/cli.ts hub serve --data .flock-dev --listen 127.0.0.1:4747",
+    "dev:hub": "tsx src/cli.ts hub serve --data .flock-dev --listen 127.0.0.1:4747 --dev-auth",
+    "dev:hub:google": "node --env-file=.env.google --import tsx src/cli.ts hub serve --data .flock-google-dev --listen 127.0.0.1:4747 --public-url http://localhost:4747",
+    "start:hub:cloudflare": "node --env-file=.env.google dist-node/cli.js hub serve --data .flock-cloudflare --listen 127.0.0.1:4747 --trust-proxy",
     "build": "npm run build:node && npm run build:web",
     "build:node": "tsc -p tsconfig.node.json",
     "build:web": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
+    "build:agent-image": "docker build -f Dockerfile.agent -t flock-agent:latest .",
     "prepack": "npm run build",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "test": "npm run typecheck && npm run test:node && npm run build && node --test tests/rendered-html.test.mjs",
     "test:node": "node --import tsx --test tests/node/*.test.ts",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern dist-node --ignore-pattern .next",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {

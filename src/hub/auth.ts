@@ -74,19 +74,7 @@ export class OidcAuthenticator implements HumanAuthenticator {
       idTokenExpected: true,
     });
     const claims = tokens.claims() as Record<string, unknown> | undefined;
-    if (!claims || typeof claims.sub !== "string") {
-      throw new FlockError("invalid_oidc_identity", "OIDC provider did not return a subject", 403);
-    }
-    const groupsValue = claims[this.config.oidc.groupsClaim];
-    const groups = Array.isArray(groupsValue) ? groupsValue.filter((value): value is string => typeof value === "string") : [];
-    if (!groups.includes(this.config.oidc.allowedGroup) && !groups.includes(this.config.oidc.adminGroup)) {
-      throw new FlockError("oidc_group_denied", "Your identity is not allowed to access this hub", 403);
-    }
-    const role: Role = groups.includes(this.config.oidc.adminGroup) ? "admin" : "member";
-    const email = typeof claims.email === "string" ? claims.email : `${claims.sub}@oidc.invalid`;
-    const displayName =
-      typeof claims.name === "string" ? claims.name : typeof claims.preferred_username === "string" ? claims.preferred_username : email;
-    const identity = { sub: claims.sub, email, displayName, role };
+    const identity = identityFromOidcClaims(claims, this.config.oidc.access);
     this.database.upsertUser(identity);
     const session = this.database.createWebSession(identity.sub);
     return { identity, returnTo: pending.returnTo, sessionSecret: session.secret };
@@ -163,6 +151,59 @@ export function requireRole(identity: HumanIdentity, role: Role): void {
   }
 }
 
+export function identityFromOidcClaims(
+  claims: Record<string, unknown> | undefined,
+  access: HubConfig["oidc"]["access"],
+): HumanIdentity {
+  if (!claims || typeof claims.sub !== "string" || !claims.sub) {
+    throw new FlockError("invalid_oidc_identity", "OIDC provider did not return a subject", 403);
+  }
+
+  let email: string;
+  let role: Role;
+  if (access.mode === "google-open") {
+    if (
+      typeof claims.email !== "string" ||
+      !claims.email.trim() ||
+      claims.email_verified !== true
+    ) {
+      throw new FlockError(
+        "invalid_oidc_identity",
+        "Google did not return a verified email address",
+        403,
+      );
+    }
+    email = claims.email.trim();
+    role = access.adminEmails.includes(email.toLowerCase()) ? "admin" : "member";
+  } else {
+    const groupsValue = claims[access.groupsClaim];
+    const groups = Array.isArray(groupsValue)
+      ? groupsValue.filter((value): value is string => typeof value === "string")
+      : [];
+    if (!groups.includes(access.allowedGroup) && !groups.includes(access.adminGroup)) {
+      throw new FlockError(
+        "oidc_group_denied",
+        "Your identity is not allowed to access this hub",
+        403,
+      );
+    }
+    role = groups.includes(access.adminGroup) ? "admin" : "member";
+    email =
+      typeof claims.email === "string" && claims.email.trim()
+        ? claims.email.trim()
+        : `${claims.sub}@oidc.invalid`;
+  }
+
+  const displayName =
+    typeof claims.name === "string" && claims.name.trim()
+      ? claims.name.trim()
+      : typeof claims.preferred_username === "string" &&
+          claims.preferred_username.trim()
+        ? claims.preferred_username.trim()
+        : email;
+  return { sub: claims.sub, email, displayName, role };
+}
+
 export function assertSameOrigin(request: IncomingMessage, publicUrl: URL): void {
   const method = request.method ?? "GET";
   if (["GET", "HEAD", "OPTIONS"].includes(method)) return;
@@ -210,8 +251,7 @@ function serializeCookie(
     .join("; ");
 }
 
-function safeReturnTo(value: string): string {
+export function safeReturnTo(value: string): string {
   if (!value.startsWith("/") || value.startsWith("//")) return "/";
   return value;
 }
-

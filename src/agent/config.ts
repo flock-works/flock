@@ -14,6 +14,7 @@ export type AgentConfig = {
   thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   dataRoot: string;
   envFile?: string;
+  credentialSource?: "local" | "hub";
 };
 
 export function defaultAgentDataRoot(): string {
@@ -68,6 +69,7 @@ export async function loadAgentConfig(path = defaultAgentConfigPath()): Promise<
     thinkingLevel,
     dataRoot: resolve(required("dataRoot")),
     envFile: typeof value.envFile === "string" && value.envFile ? resolve(value.envFile) : undefined,
+    credentialSource: value.credentialSource === "hub" ? "hub" : "local",
   };
 }
 

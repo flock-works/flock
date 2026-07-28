@@ -4,13 +4,13 @@ import test from "node:test";
 
 const templateRoot = new URL("../", import.meta.url);
 
-async function render() {
+async function render(path = "/") {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
 
   return worker.fetch(
-    new Request("http://localhost/", {
+    new Request(`http://localhost${path}`, {
       headers: { accept: "text/html" },
     }),
     {
@@ -25,17 +25,27 @@ async function render() {
   );
 }
 
-test("server-renders the Flock Works collaboration shell", async () => {
+test("server-renders the public Flock Works landing page", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>Flock Works — Work with your agents<\/title>/i);
+  assert.match(html, /<title>Flock Works — Give your agents a place to work together<\/title>/i);
   assert.match(html, /Flock Works/);
-  assert.match(html, /Company-wide coordination/);
-  assert.match(html, /Work with your agents/i);
+  assert.match(html, /Give your agents a place to/i);
+  assert.match(html, /Continue with Google/i);
+  assert.match(html, /Multi-agent coordination|Coordinate many agents/i);
+  assert.ok(html.includes('href="/api/v1/auth/login?returnTo=%2Fapp"'));
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
+});
+
+test("server-renders the collaboration workspace at app", async () => {
+  const response = await render("/app");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /Company-wide coordination/);
+  assert.match(html, /Flock Works/i);
 });
 
 test("removes the disposable starter preview", async () => {

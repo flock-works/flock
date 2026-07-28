@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { WebSocketServer } from "ws";
+import type { Credential } from "@earendil-works/pi-ai";
 import type { AgentCapabilities } from "../shared/protocol.ts";
 import { FlockError, toError } from "../shared/errors.ts";
 import { createId } from "../shared/ids.ts";
@@ -18,11 +19,15 @@ import { BrowserEventBus } from "./event-bus.ts";
 import { HubRuntime } from "./hub-runtime.ts";
 import { LeaderLock } from "./leader-lock.ts";
 import { WebAppHandler } from "./web-handler.ts";
+import { HostedAgentManager, type ContainerRuntime } from "./hosted-agent-manager.ts";
+import { OAuthCoordinator } from "./oauth-coordinator.ts";
+import type { ControlDatabase } from "./control-db.ts";
 
 export type HubServerOptions = {
   config: HubConfig;
   authenticator?: HumanAuthenticator;
   packageRoot?: string;
+  hostedAgentRuntime?: ContainerRuntime;
 };
 
 export class HubServer {
@@ -34,9 +39,12 @@ export class HubServer {
   private readonly web: WebAppHandler;
   private readonly leader: LeaderLock;
   private readonly providedAuthenticator: HumanAuthenticator | undefined;
+  private readonly hostedAgentRuntime: ContainerRuntime | undefined;
   private runtime: HubRuntime | undefined;
   private gateway: AgentGateway | undefined;
   private authenticator: HumanAuthenticator | undefined;
+  private hostedAgents: HostedAgentManager | undefined;
+  private oauth: OAuthCoordinator | undefined;
   private standbyTimer: NodeJS.Timeout | undefined;
   private leaseTimer: NodeJS.Timeout | undefined;
   private stopped = false;
@@ -47,6 +55,7 @@ export class HubServer {
     this.leader = new LeaderLock(this.config.dataRoot, this.nodeId);
     this.web = new WebAppHandler(options.packageRoot ?? resolve(import.meta.dirname, "../.."));
     this.providedAuthenticator = options.authenticator;
+    this.hostedAgentRuntime = options.hostedAgentRuntime;
     this.authenticator = options.authenticator;
     this.server = createServer((request, response) => void this.handleRequest(request, response));
     this.server.on("upgrade", (request, socket, head) => {
@@ -92,11 +101,15 @@ export class HubServer {
     this.stopped = true;
     if (this.standbyTimer) clearInterval(this.standbyTimer);
     if (this.leaseTimer) clearInterval(this.leaseTimer);
+    await this.hostedAgents?.stop();
+    this.oauth?.close();
     this.gateway?.close();
     this.events.close();
     this.runtime?.close();
     this.gateway = undefined;
     this.runtime = undefined;
+    this.hostedAgents = undefined;
+    this.oauth = undefined;
     await this.leader.release();
     await new Promise<void>((resolvePromise) => this.server.close(() => resolvePromise()));
   }
@@ -109,10 +122,22 @@ export class HubServer {
         await this.leader.acquire();
         acquired = true;
       }
-      const runtime = await HubRuntime.open(this.config.dataRoot);
+      const runtime = await HubRuntime.open(
+        this.config.dataRoot,
+        this.config.hostedAgents.credentialKey,
+      );
       this.runtime = runtime;
       this.authenticator = this.providedAuthenticator ?? new OidcAuthenticator(runtime.database, this.config);
       this.gateway = new AgentGateway(runtime, this.events, this.config.leaseMs);
+      if (this.config.hostedAgents.enabled) {
+        this.oauth = new OAuthCoordinator(runtime.database);
+        this.hostedAgents = new HostedAgentManager(
+          runtime.database,
+          this.config,
+          this.hostedAgentRuntime,
+        );
+        await this.hostedAgents.start();
+      }
       this.leaseTimer = setInterval(() => {
         try {
           if (this.config.leaderLock) this.leader.assertLeader();
@@ -135,6 +160,10 @@ export class HubServer {
   private async demote(): Promise<void> {
     if (this.leaseTimer) clearInterval(this.leaseTimer);
     this.leaseTimer = undefined;
+    await this.hostedAgents?.stop();
+    this.hostedAgents = undefined;
+    this.oauth?.close();
+    this.oauth = undefined;
     this.gateway?.close();
     this.gateway = undefined;
     this.events.close();
@@ -219,6 +248,31 @@ export class HubServer {
       });
       return sendJson(response, 201, { agent: enrolled.agent, token: enrolled.token });
     }
+    if (url.pathname === "/api/v1/agent/provider-credential" && ["GET", "PUT"].includes(request.method ?? "")) {
+      const agent = authenticateAgentRequest(request, runtime.database);
+      if (!agent.hosting) throw new FlockError("forbidden", "Only hosted agents use the credential service", 403);
+      this.enforceRateLimit(request, `agent-credential:${agent.id}`, 120, 60_000);
+      if (request.method === "GET") {
+        const value = runtime.database.readHostedAgentCredential(agent.id);
+        return sendJson(response, 200, {
+          providerId: value.connection.providerId,
+          credential: value.credential,
+          version: value.connection.version,
+        });
+      }
+      const body = await readJson(request);
+      const current = runtime.database.readHostedAgentCredential(agent.id);
+      const credential = requireCredential(body.credential);
+      const connection = runtime.database.updateProviderCredential({
+        id: current.connection.id,
+        expectedVersion: requireInteger(body.expectedVersion, "expectedVersion"),
+        credential,
+      });
+      return sendJson(response, 200, {
+        providerId: connection.providerId,
+        version: connection.version,
+      });
+    }
 
     const identity = await this.requireIdentity(request);
     assertSameOrigin(request, this.config.publicUrl);
@@ -228,6 +282,59 @@ export class HubServer {
 
     if (url.pathname === "/api/v1/me" && request.method === "GET") {
       return sendJson(response, 200, { user: identity });
+    }
+    if (url.pathname === "/api/v1/llm/providers" && request.method === "GET") {
+      return sendJson(response, 200, {
+        hostedAgentsEnabled: this.config.hostedAgents.enabled,
+        providers: this.oauth?.catalog() ?? [],
+      });
+    }
+    if (url.pathname === "/api/v1/provider-connections" && request.method === "GET") {
+      return sendJson(response, 200, {
+        connections: runtime.database.listProviderConnections(identity.sub),
+      });
+    }
+    const providerLoginMatch = url.pathname.match(/^\/api\/v1\/provider-connections\/([^/]+)\/login$/);
+    if (providerLoginMatch && request.method === "POST") {
+      const oauth = this.requireOAuth();
+      const flow = oauth.start({
+        userSub: identity.sub,
+        label: identity.email,
+        providerId: decodeURIComponent(providerLoginMatch[1]!),
+      });
+      return sendJson(response, 202, { flow });
+    }
+    const connectionMatch = url.pathname.match(/^\/api\/v1\/provider-connections\/([^/]+)$/);
+    if (connectionMatch && request.method === "DELETE") {
+      const connection = runtime.database.disconnectProviderConnection(
+        decodeURIComponent(connectionMatch[1]!),
+        identity.sub,
+      );
+      await this.hostedAgents?.reconcile();
+      return sendJson(response, 200, { connection });
+    }
+    const oauthFlowMatch = url.pathname.match(/^\/api\/v1\/oauth-flows\/([^/]+)$/);
+    if (oauthFlowMatch && request.method === "GET") {
+      return sendJson(response, 200, {
+        flow: this.requireOAuth().get(decodeURIComponent(oauthFlowMatch[1]!), identity.sub),
+      });
+    }
+    if (oauthFlowMatch && request.method === "POST") {
+      const body = await readJson(request);
+      const flow = this.requireOAuth().respond(
+        decodeURIComponent(oauthFlowMatch[1]!),
+        identity.sub,
+        requireString(body.promptId, "promptId"),
+        requireString(body.value, "value"),
+      );
+      return sendJson(response, 200, { flow });
+    }
+    if (oauthFlowMatch && request.method === "DELETE") {
+      const flow = this.requireOAuth().cancel(
+        decodeURIComponent(oauthFlowMatch[1]!),
+        identity.sub,
+      );
+      return sendJson(response, 200, { flow });
     }
     if (url.pathname === "/api/v1/projects" && request.method === "GET") {
       return sendJson(response, 200, { projects: runtime.database.listProjects() });
@@ -281,6 +388,24 @@ export class HubServer {
         });
         return sendJson(response, 201, { enrollment });
       }
+      if (action === "hosted-agents" && request.method === "POST") {
+        this.requireHostedAgents();
+        const body = await readJson(request);
+        const thinkingLevel = requireThinkingLevel(body.thinkingLevel);
+        const model = requireString(body.model, "model");
+        assertKnownModel(this.requireOAuth(), model);
+        const created = runtime.database.createHostedAgent({
+          projectId,
+          name: requireString(body.name, "name"),
+          createdBy: identity.sub,
+          connectionId: requireString(body.connectionId, "connectionId"),
+          model,
+          thinkingLevel,
+          workspace: "/workspace",
+        });
+        await this.hostedAgents?.reconcileAgent(created.agent.id);
+        return sendJson(response, 201, { agent: runtime.database.getAgent(created.agent.id) });
+      }
       if (action === "dispatches" && request.method === "POST") {
         const body = await readJson(request);
         const targetAgentIds = requireStringArray(body.targetAgentIds, "targetAgentIds");
@@ -301,6 +426,48 @@ export class HubServer {
         await this.gateway?.offerAvailableJobs();
         return sendJson(response, 201, { dispatch: created.dispatch, jobs: created.jobs });
       }
+    }
+
+    const hostedAgentMatch = url.pathname.match(/^\/api\/v1\/hosted-agents\/([^/]+)$/);
+    if (hostedAgentMatch && request.method === "PATCH") {
+      this.requireHostedAgents();
+      const body = await readJson(request);
+      const model = optionalString(body.model);
+      if (model) assertKnownModel(this.requireOAuth(), model);
+      const desiredState = body.desiredState === undefined
+        ? undefined
+        : requireDesiredState(body.desiredState);
+      const agent = runtime.database.updateHostedAgent({
+        agentId: decodeURIComponent(hostedAgentMatch[1]!),
+        actor: identity.sub,
+        connectionId: optionalString(body.connectionId),
+        model,
+        thinkingLevel: body.thinkingLevel === undefined
+          ? undefined
+          : requireThinkingLevel(body.thinkingLevel),
+        desiredState,
+      });
+      for (const job of runtime.database.abortActiveJobsForAgent(agent.id, identity.sub)) {
+        this.gateway?.abortJob(job);
+      }
+      await this.hostedAgents?.removeAgentContainer(agent.id);
+      await this.hostedAgents?.reconcileAgent(agent.id);
+      return sendJson(response, 200, { agent: runtime.database.getAgent(agent.id) });
+    }
+    if (hostedAgentMatch && request.method === "DELETE") {
+      this.requireHostedAgents();
+      const agentId = decodeURIComponent(hostedAgentMatch[1]!);
+      const hosted = runtime.database.deleteHostedAgent({
+        agentId,
+        actor: identity.sub,
+        actorRole: identity.role,
+        retentionDays: this.config.hostedAgents.retentionDays,
+      });
+      for (const job of runtime.database.abortActiveJobsForAgent(agentId, identity.sub)) {
+        this.gateway?.abortJob(job);
+      }
+      await this.hostedAgents?.removeAgentContainer(agentId);
+      return sendJson(response, 200, { hosted });
     }
 
     const selectMatch = url.pathname.match(/^\/api\/v1\/dispatches\/([^/]+)\/select$/);
@@ -374,6 +541,18 @@ export class HubServer {
   private requireAuthenticator(): HumanAuthenticator {
     if (!this.authenticator) throw new FlockError("standby", "Hub is standby", 503);
     return this.authenticator;
+  }
+
+  private requireOAuth(): OAuthCoordinator {
+    if (!this.oauth) throw new FlockError("hosted_agents_disabled", "Hosted agents are not enabled on this hub", 503);
+    return this.oauth;
+  }
+
+  private requireHostedAgents(): HostedAgentManager {
+    if (!this.hostedAgents) {
+      throw new FlockError("hosted_agents_disabled", "Hosted agents are not enabled on this hub", 503);
+    }
+    return this.hostedAgents;
   }
 
   private async requireIdentity(request: IncomingMessage): Promise<HumanIdentity> {
@@ -454,6 +633,60 @@ function sendJson(
 function requireString(value: unknown, field: string): string {
   if (typeof value !== "string" || !value.trim()) throw new FlockError("invalid_request", `${field} is required`);
   return value.trim();
+}
+
+function requireInteger(value: unknown, field: string): number {
+  if (!Number.isInteger(value)) throw new FlockError("invalid_request", `${field} must be an integer`);
+  return value as number;
+}
+
+function requireCredential(value: unknown): Credential {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new FlockError("invalid_request", "credential is required");
+  }
+  const type = (value as { type?: unknown }).type;
+  if (type !== "oauth") {
+    throw new FlockError("invalid_request", "Hosted provider connections require an OAuth credential");
+  }
+  return value as Credential;
+}
+
+function requireThinkingLevel(value: unknown): "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" {
+  const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+  if (!levels.includes(value as (typeof levels)[number])) {
+    throw new FlockError("invalid_request", `thinkingLevel must be one of ${levels.join(", ")}`);
+  }
+  return value as (typeof levels)[number];
+}
+
+function requireDesiredState(value: unknown): "running" | "stopped" {
+  if (value !== "running" && value !== "stopped") {
+    throw new FlockError("invalid_request", "desiredState must be running or stopped");
+  }
+  return value;
+}
+
+function assertKnownModel(oauth: OAuthCoordinator, reference: string): void {
+  const separator = reference.indexOf("/");
+  if (separator <= 0 || separator === reference.length - 1) {
+    throw new FlockError("invalid_model", "model must use provider/model-id syntax");
+  }
+  const providerId = reference.slice(0, separator);
+  const modelId = reference.slice(separator + 1);
+  const provider = oauth.catalog().find((candidate) => candidate.id === providerId);
+  if (!provider?.models.some((model) => model.id === modelId)) {
+    throw new FlockError("model_not_found", `Model ${reference} is not available`, 400);
+  }
+}
+
+function authenticateAgentRequest(request: IncomingMessage, database: ControlDatabase) {
+  const authorization = request.headers.authorization;
+  if (!authorization?.startsWith("Bearer ")) {
+    throw new FlockError("unauthorized", "Agent bearer token is required", 401);
+  }
+  const agent = database.authenticateAgent(authorization.slice("Bearer ".length));
+  if (!agent) throw new FlockError("unauthorized", "Invalid agent bearer token", 401);
+  return agent;
 }
 
 function optionalString(value: unknown): string | undefined {

@@ -1,0 +1,14 @@
+FROM node:22.19-bookworm-slim AS build
+WORKDIR /opt/flock
+COPY package.json package-lock.json tsconfig.node.json ./
+RUN npm ci
+COPY src ./src
+RUN npm run build:node
+
+FROM node:22.19-bookworm-slim
+ENV NODE_ENV=production
+WORKDIR /opt/flock
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+COPY --from=build /opt/flock/dist-node ./dist-node
+ENTRYPOINT ["node", "/opt/flock/dist-node/cli.js"]

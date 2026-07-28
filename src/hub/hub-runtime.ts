@@ -2,7 +2,6 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { SessionTreeEntry } from "@earendil-works/pi-agent-core";
 import { uuidv7 } from "@earendil-works/pi-ai";
-import type { AgentCapabilities } from "../shared/protocol.ts";
 import { FlockError } from "../shared/errors.ts";
 import { createId, payloadHash } from "../shared/ids.ts";
 import { PiJsonlSession, type SessionAppendResult } from "../shared/pi-session.ts";
@@ -18,9 +17,9 @@ export class HubRuntime {
     this.database = database;
   }
 
-  static async open(dataRoot: string): Promise<HubRuntime> {
+  static async open(dataRoot: string, credentialKey?: string): Promise<HubRuntime> {
     await mkdir(dataRoot, { recursive: true });
-    const database = new ControlDatabase(join(dataRoot, "control.sqlite"));
+    const database = new ControlDatabase(join(dataRoot, "control.sqlite"), credentialKey);
     const runtime = new HubRuntime(dataRoot, database);
     for (const project of database.listProjects()) {
       const session = await PiJsonlSession.open(PiJsonlSession.projectPath(dataRoot, project.id));
@@ -88,6 +87,14 @@ export class HubRuntime {
       const agent = this.database.getAgent(agentId);
       if (!agent || agent.projectId !== input.projectId || agent.revokedAt) {
         throw new FlockError("invalid_target", `Agent ${agentId} cannot receive this dispatch`, 409);
+      }
+      if (
+        agent.hosting &&
+        (agent.hosting.desiredState !== "running" ||
+          agent.hosting.runtimeState === "attention" ||
+          this.database.getProviderConnection(agent.hosting.connectionId)?.status !== "connected")
+      ) {
+        throw new FlockError("agent_unavailable", `Hosted agent ${agent.name} requires attention`, 409);
       }
     }
     const session = this.getSession(input.projectId);

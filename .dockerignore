@@ -1,0 +1,8 @@
+node_modules
+dist
+dist-node
+.next
+.git
+.flock-dev
+coverage
+npm-debug.log

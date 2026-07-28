@@ -30,6 +30,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.google.example
 
 # vercel
 .vercel
@@ -43,5 +44,8 @@ next-env.d.ts
 /outputs/
 /work/
 flock-data/
+/.flock-dev/
+/.flock-google-dev/
+/.flock-cloudflare/
 reverse-engineered/
 TOP_LEVEL_DEPENDENCIES.txt

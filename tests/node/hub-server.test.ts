@@ -30,12 +30,24 @@ function testConfig(dataRoot: string): HubConfig {
       issuer: new URL("https://identity.example.test"),
       clientId: "test",
       clientSecret: "test",
-      allowedGroup: "members",
-      adminGroup: "admins",
-      groupsClaim: "groups",
+      access: {
+        mode: "groups",
+        allowedGroup: "members",
+        adminGroup: "admins",
+        groupsClaim: "groups",
+      },
     },
     leaseMs: 10_000,
     leaderLock: false,
+    hostedAgents: {
+      enabled: false,
+      image: "flock-agent:test",
+      internalHubUrl: new URL("http://127.0.0.1"),
+      cpuLimit: 1,
+      memoryMb: 512,
+      pidsLimit: 128,
+      retentionDays: 7,
+    },
   };
 }
 

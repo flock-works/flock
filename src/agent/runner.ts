@@ -23,6 +23,7 @@ import type { AgentConfig } from "./config.ts";
 import type { ActiveLease, JobResult } from "./client.ts";
 import { LeasedSessionStorage } from "./leased-session.ts";
 import { PiCredentialStore } from "./pi-credentials.ts";
+import { HubCredentialStore } from "./hub-credential-store.ts";
 import type { SessionMirror } from "./session-mirror.ts";
 
 export class PiAgentRunner {
@@ -33,11 +34,15 @@ export class PiAgentRunner {
   constructor(
     config: AgentConfig,
     mirror: SessionMirror,
-    models: Models = builtinModels({ credentials: new PiCredentialStore() }),
+    models?: Models,
   ) {
     this.config = config;
     this.mirror = mirror;
-    this.models = models;
+    this.models = models ?? builtinModels({
+      credentials: config.credentialSource === "hub"
+        ? new HubCredentialStore(config.hubUrl, config.token)
+        : new PiCredentialStore(),
+    });
   }
 
   async execute(lease: ActiveLease): Promise<JobResult> {
@@ -228,7 +233,8 @@ function safeEvent(event: AgentHarnessEvent): unknown {
     };
   }
   if ("signal" in event) {
-    const { signal: _signal, ...rest } = event;
+    const rest: Record<string, unknown> = { ...event };
+    delete rest.signal;
     return rest;
   }
   return event;

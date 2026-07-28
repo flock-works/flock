@@ -23,7 +23,11 @@ import {
 } from "./agent/service.ts";
 import { SessionMirror } from "./agent/session-mirror.ts";
 import { TestAuthenticator } from "./hub/auth.ts";
-import { hubConfigFromEnvironment, type HubConfig } from "./hub/config.ts";
+import {
+  hostedAgentConfigFromEnvironment,
+  hubConfigFromEnvironment,
+  type HubConfig,
+} from "./hub/config.ts";
 import { HubServer } from "./hub/hub-server.ts";
 import { FlockError, toError } from "./shared/errors.ts";
 
@@ -42,18 +46,27 @@ hub
   .option("--trust-proxy", "trust a TLS-terminating reverse proxy", false)
   .option("--no-leader-lock", "disable the shared-directory leader lock")
   .option("--dev-auth", "use a local test identity; only valid on loopback")
+  .option("--hosted-agents", "enable Docker-hosted agents")
   .option("--project-name <name>", "create an initial project on first start", "Flock Works")
   .option("--project-slug <slug>", "initial project slug", "flock-works")
   .action(async (options) => {
-    const publicUrl = options.publicUrl ?? inferredPublicUrl(options.listen);
+    const publicUrl =
+      options.publicUrl ?? process.env.FLOCK_PUBLIC_URL ?? inferredPublicUrl(options.listen);
     const config = options.devAuth
-      ? developmentHubConfig(options.data, options.listen, publicUrl, options.leaderLock)
+      ? developmentHubConfig(
+          options.data,
+          options.listen,
+          publicUrl,
+          options.leaderLock,
+          options.hostedAgents,
+        )
       : hubConfigFromEnvironment({
           dataRoot: options.data,
           listen: options.listen,
           publicUrl,
           trustProxy: options.trustProxy,
           leaderLock: options.leaderLock,
+          hostedAgents: options.hostedAgents,
         });
     if (options.devAuth && !["127.0.0.1", "localhost", "::1"].includes(config.publicUrl.hostname)) {
       throw new FlockError("unsafe_dev_auth", "--dev-auth may only be used with a loopback public URL");
@@ -217,6 +230,7 @@ function developmentHubConfig(
   listen: string,
   publicUrl: string,
   leaderLock: boolean,
+  hostedAgents: boolean | undefined,
 ): HubConfig {
   const separator = listen.lastIndexOf(":");
   const host = listen.slice(0, separator);
@@ -233,12 +247,16 @@ function developmentHubConfig(
       issuer: new URL("https://identity.invalid"),
       clientId: "development",
       clientSecret: "development",
-      allowedGroup: "members",
-      adminGroup: "admins",
-      groupsClaim: "groups",
+      access: {
+        mode: "groups",
+        allowedGroup: "members",
+        adminGroup: "admins",
+        groupsClaim: "groups",
+      },
     },
     leaseMs: 30_000,
     leaderLock,
+    hostedAgents: hostedAgentConfigFromEnvironment(new URL(publicUrl), hostedAgents),
   };
 }
 

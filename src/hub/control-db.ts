@@ -1,9 +1,11 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import type { Credential } from "@earendil-works/pi-ai";
 import type { AgentCapabilities } from "../shared/protocol.ts";
 import { FlockError } from "../shared/errors.ts";
 import { createId, createSecret, hashSecret, secretsEqual } from "../shared/ids.ts";
+import { SecretBox } from "./secret-box.ts";
 
 export type Role = "admin" | "member";
 export type AgentStatus = "online" | "offline" | "busy" | "attention" | "revoked";
@@ -30,6 +32,40 @@ export type AgentRecord = {
   workspace: string;
   capabilities: AgentCapabilities;
   revokedAt: string | null;
+  hosting: HostedAgentRecord | null;
+};
+
+export type ProviderConnectionRecord = {
+  id: string;
+  userSub: string;
+  providerId: OAuthProviderId;
+  label: string;
+  status: "connected" | "attention" | "revoked";
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+  lastError: string | null;
+};
+
+export type OAuthProviderId = "anthropic" | "openai-codex" | "github-copilot" | "openrouter";
+export type HostedAgentDesiredState = "running" | "stopped";
+export type HostedAgentRuntimeState = "pending" | "starting" | "running" | "stopped" | "attention" | "deleted";
+
+export type HostedAgentRecord = {
+  agentId: string;
+  createdBy: string;
+  connectionId: string;
+  providerId: OAuthProviderId;
+  connectionOwnerSub: string;
+  connectionLabel: string;
+  desiredState: HostedAgentDesiredState;
+  runtimeState: HostedAgentRuntimeState;
+  containerId: string | null;
+  lastError: string | null;
+  deletedAt: string | null;
+  purgeAfter: string | null;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type DispatchRecord = {
@@ -108,6 +144,40 @@ function toAgent(row: Row): AgentRecord {
     workspace: string(row, "workspace"),
     capabilities: JSON.parse(string(row, "capabilities_json")) as AgentCapabilities,
     revokedAt: nullableString(row, "revoked_at"),
+    hosting: null,
+  };
+}
+
+function toProviderConnection(row: Row): ProviderConnectionRecord {
+  return {
+    id: string(row, "id"),
+    userSub: string(row, "user_sub"),
+    providerId: string(row, "provider_id") as OAuthProviderId,
+    label: string(row, "label"),
+    status: string(row, "status") as ProviderConnectionRecord["status"],
+    version: number(row, "version"),
+    createdAt: string(row, "created_at"),
+    updatedAt: string(row, "updated_at"),
+    lastError: nullableString(row, "last_error"),
+  };
+}
+
+function toHostedAgent(row: Row): HostedAgentRecord {
+  return {
+    agentId: string(row, "agent_id"),
+    createdBy: string(row, "created_by"),
+    connectionId: string(row, "connection_id"),
+    providerId: string(row, "provider_id") as OAuthProviderId,
+    connectionOwnerSub: string(row, "connection_owner_sub"),
+    connectionLabel: string(row, "connection_label"),
+    desiredState: string(row, "desired_state") as HostedAgentDesiredState,
+    runtimeState: string(row, "runtime_state") as HostedAgentRuntimeState,
+    containerId: nullableString(row, "container_id"),
+    lastError: nullableString(row, "last_error"),
+    deletedAt: nullableString(row, "deleted_at"),
+    purgeAfter: nullableString(row, "purge_after"),
+    createdAt: string(row, "created_at"),
+    updatedAt: string(row, "updated_at"),
   };
 }
 
@@ -149,9 +219,11 @@ function toJob(row: Row): JobRecord {
 export class ControlDatabase {
   readonly path: string;
   private readonly database: DatabaseSync;
+  private readonly secrets: SecretBox | undefined;
 
-  constructor(path: string) {
+  constructor(path: string, credentialKey?: string) {
     this.path = path;
+    this.secrets = credentialKey ? new SecretBox(credentialKey) : undefined;
     mkdirSync(dirname(path), { recursive: true });
     this.database = new DatabaseSync(path);
     this.database.exec(`
@@ -272,6 +344,39 @@ export class ControlDatabase {
         expires_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS provider_connections (
+        id TEXT PRIMARY KEY,
+        user_sub TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        label TEXT NOT NULL,
+        credential_ciphertext TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('connected', 'attention', 'revoked')),
+        version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_error TEXT,
+        UNIQUE(user_sub, provider_id)
+      );
+      CREATE INDEX IF NOT EXISTS provider_connections_owner_idx
+        ON provider_connections(user_sub, status);
+
+      CREATE TABLE IF NOT EXISTS hosted_agents (
+        agent_id TEXT PRIMARY KEY REFERENCES agents(id) ON DELETE CASCADE,
+        created_by TEXT NOT NULL,
+        connection_id TEXT NOT NULL REFERENCES provider_connections(id),
+        agent_token_ciphertext TEXT NOT NULL,
+        desired_state TEXT NOT NULL CHECK (desired_state IN ('running', 'stopped')),
+        runtime_state TEXT NOT NULL CHECK (runtime_state IN ('pending', 'starting', 'running', 'stopped', 'attention', 'deleted')),
+        container_id TEXT,
+        last_error TEXT,
+        deleted_at TEXT,
+        purge_after TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS hosted_agents_reconcile_idx
+        ON hosted_agents(desired_state, runtime_state, deleted_at);
+
       CREATE TABLE IF NOT EXISTS audit_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         occurred_at TEXT NOT NULL,
@@ -350,6 +455,138 @@ export class ControlDatabase {
     return (this.database.prepare("SELECT * FROM projects ORDER BY created_at").all() as Row[]).map(toProject);
   }
 
+  upsertProviderConnection(input: {
+    userSub: string;
+    providerId: OAuthProviderId;
+    label: string;
+    credential: Credential;
+  }): ProviderConnectionRecord {
+    const secrets = this.requireSecrets();
+    const existing = this.database
+      .prepare("SELECT id FROM provider_connections WHERE user_sub = ? AND provider_id = ?")
+      .get(input.userSub, input.providerId) as Row | undefined;
+    const id = existing ? string(existing, "id") : createId("llm");
+    const now = new Date().toISOString();
+    this.database
+      .prepare(`
+        INSERT INTO provider_connections(
+          id, user_sub, provider_id, label, credential_ciphertext, status,
+          version, created_at, updated_at, last_error
+        ) VALUES (?, ?, ?, ?, ?, 'connected', 1, ?, ?, NULL)
+        ON CONFLICT(user_sub, provider_id) DO UPDATE SET
+          label = excluded.label,
+          credential_ciphertext = excluded.credential_ciphertext,
+          status = 'connected',
+          version = provider_connections.version + 1,
+          updated_at = excluded.updated_at,
+          last_error = NULL
+      `)
+      .run(
+        id,
+        input.userSub,
+        input.providerId,
+        input.label,
+        secrets.seal(input.credential),
+        now,
+        now,
+      );
+    this.audit(input.userSub, "provider.connection.upsert", id, { providerId: input.providerId });
+    const connection = this.getProviderConnection(id);
+    if (!connection) throw new FlockError("database_corrupt", "Provider connection was not persisted", 500);
+    return connection;
+  }
+
+  listProviderConnections(userSub?: string): ProviderConnectionRecord[] {
+    const rows = userSub
+      ? (this.database
+          .prepare("SELECT * FROM provider_connections WHERE user_sub = ? ORDER BY provider_id")
+          .all(userSub) as Row[])
+      : (this.database
+          .prepare("SELECT * FROM provider_connections ORDER BY user_sub, provider_id")
+          .all() as Row[]);
+    return rows.map(toProviderConnection);
+  }
+
+  getProviderConnection(id: string): ProviderConnectionRecord | undefined {
+    const row = this.database.prepare("SELECT * FROM provider_connections WHERE id = ?").get(id) as Row | undefined;
+    return row ? toProviderConnection(row) : undefined;
+  }
+
+  readProviderCredential(id: string): { connection: ProviderConnectionRecord; credential: Credential } {
+    const row = this.database.prepare("SELECT * FROM provider_connections WHERE id = ?").get(id) as Row | undefined;
+    if (!row) throw new FlockError("connection_not_found", "Provider connection not found", 404);
+    const connection = toProviderConnection(row);
+    if (connection.status !== "connected") {
+      throw new FlockError("connection_unavailable", "Provider connection requires attention", 409);
+    }
+    return {
+      connection,
+      credential: this.requireSecrets().open<Credential>(string(row, "credential_ciphertext")),
+    };
+  }
+
+  updateProviderCredential(input: {
+    id: string;
+    expectedVersion: number;
+    credential: Credential;
+  }): ProviderConnectionRecord {
+    const now = new Date().toISOString();
+    const result = this.database
+      .prepare(`
+        UPDATE provider_connections
+        SET credential_ciphertext = ?, version = version + 1, status = 'connected',
+          updated_at = ?, last_error = NULL
+        WHERE id = ? AND version = ? AND status = 'connected'
+      `)
+      .run(
+        this.requireSecrets().seal(input.credential),
+        now,
+        input.id,
+        input.expectedVersion,
+      );
+    if (result.changes !== 1) {
+      throw new FlockError("credential_version_conflict", "Provider credential changed; retry the refresh", 409);
+    }
+    const connection = this.getProviderConnection(input.id);
+    if (!connection) throw new FlockError("connection_not_found", "Provider connection not found", 404);
+    return connection;
+  }
+
+  disconnectProviderConnection(id: string, actor: string): ProviderConnectionRecord {
+    const connection = this.getProviderConnection(id);
+    if (!connection) throw new FlockError("connection_not_found", "Provider connection not found", 404);
+    if (connection.userSub !== actor) {
+      throw new FlockError("forbidden", "Only the connection owner may disconnect it", 403);
+    }
+    const now = new Date().toISOString();
+    this.transaction(() => {
+      this.database
+        .prepare(`
+          UPDATE provider_connections
+          SET status = 'revoked', version = version + 1, updated_at = ?,
+            last_error = 'Disconnected by owner'
+          WHERE id = ?
+        `)
+        .run(now, id);
+      this.database
+        .prepare(`
+          UPDATE hosted_agents
+          SET runtime_state = 'attention', last_error = 'Provider connection was disconnected',
+            updated_at = ?
+          WHERE connection_id = ? AND deleted_at IS NULL
+        `)
+        .run(now, id);
+      this.database
+        .prepare(`
+          UPDATE agents SET status = 'attention'
+          WHERE id IN (SELECT agent_id FROM hosted_agents WHERE connection_id = ? AND deleted_at IS NULL)
+        `)
+        .run(id);
+    });
+    this.audit(actor, "provider.connection.disconnect", id, { providerId: connection.providerId });
+    return this.getProviderConnection(id)!;
+  }
+
   createEnrollment(input: {
     projectId: string;
     nameHint: string;
@@ -419,23 +656,259 @@ export class ControlDatabase {
     });
   }
 
+  createHostedAgent(input: {
+    projectId: string;
+    name: string;
+    createdBy: string;
+    connectionId: string;
+    model: string;
+    thinkingLevel: AgentCapabilities["thinkingLevel"];
+    workspace: string;
+  }): { agent: AgentRecord; token: string } {
+    if (!this.getProject(input.projectId)) throw new FlockError("project_not_found", "Project not found", 404);
+    const connection = this.getProviderConnection(input.connectionId);
+    if (!connection || connection.status !== "connected") {
+      throw new FlockError("connection_unavailable", "Choose a connected provider account", 409);
+    }
+    if (connection.userSub !== input.createdBy) {
+      throw new FlockError("forbidden", "A hosted agent may only be bound to your own provider connection", 403);
+    }
+    if (!input.model.startsWith(`${connection.providerId}/`)) {
+      throw new FlockError("provider_mismatch", "The model must belong to the selected provider connection", 400);
+    }
+    const token = createSecret();
+    const agentId = createId("agt");
+    const now = new Date().toISOString();
+    const capabilities: AgentCapabilities = {
+      tools: ["read", "write", "edit", "bash"],
+      platform: "docker",
+      workspace: input.workspace,
+      model: input.model,
+      thinkingLevel: input.thinkingLevel,
+    };
+    this.transaction(() => {
+      this.database
+        .prepare(`
+          INSERT INTO agents(
+            id, project_id, name, token_hash, status, last_seen_at, model, thinking_level,
+            platform, workspace, capabilities_json, created_at
+          ) VALUES (?, ?, ?, ?, 'offline', NULL, ?, ?, 'docker', ?, ?, ?)
+        `)
+        .run(
+          agentId,
+          input.projectId,
+          input.name.trim(),
+          hashSecret(token),
+          input.model,
+          input.thinkingLevel,
+          input.workspace,
+          JSON.stringify(capabilities),
+          now,
+        );
+      this.database
+        .prepare(`
+          INSERT INTO hosted_agents(
+            agent_id, created_by, connection_id, agent_token_ciphertext, desired_state,
+            runtime_state, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, 'running', 'pending', ?, ?)
+        `)
+        .run(
+          agentId,
+          input.createdBy,
+          input.connectionId,
+          this.requireSecrets().seal(`${agentId}.${token}`),
+          now,
+          now,
+        );
+    });
+    this.audit(input.createdBy, "hosted_agent.create", agentId, {
+      projectId: input.projectId,
+      providerId: connection.providerId,
+    });
+    const agent = this.getAgent(agentId);
+    if (!agent) throw new FlockError("database_corrupt", "Hosted agent was not persisted", 500);
+    return { agent, token: `${agentId}.${token}` };
+  }
+
   authenticateAgent(bearer: string): AgentRecord | undefined {
     const [id, secret] = bearer.split(".", 2);
     if (!id || !secret) return undefined;
     const row = this.database.prepare("SELECT * FROM agents WHERE id = ?").get(id) as Row | undefined;
     if (!row || nullableString(row, "revoked_at") || !secretsEqual(secret, string(row, "token_hash"))) return undefined;
-    return toAgent(row);
+    return this.attachHosting(toAgent(row));
   }
 
   getAgent(id: string): AgentRecord | undefined {
     const row = this.database.prepare("SELECT * FROM agents WHERE id = ?").get(id) as Row | undefined;
-    return row ? toAgent(row) : undefined;
+    return row ? this.attachHosting(toAgent(row)) : undefined;
   }
 
   listAgents(projectId: string): AgentRecord[] {
     return (
       this.database.prepare("SELECT * FROM agents WHERE project_id = ? ORDER BY name").all(projectId) as Row[]
-    ).map(toAgent);
+    ).map(toAgent).map((agent) => this.attachHosting(agent));
+  }
+
+  getHostedAgent(agentId: string): HostedAgentRecord | undefined {
+    const row = this.database
+      .prepare(`
+        SELECT h.*, c.provider_id, c.user_sub AS connection_owner_sub, c.label AS connection_label
+        FROM hosted_agents h
+        JOIN provider_connections c ON c.id = h.connection_id
+        WHERE h.agent_id = ?
+      `)
+      .get(agentId) as Row | undefined;
+    return row ? toHostedAgent(row) : undefined;
+  }
+
+  listHostedAgents(includeDeleted = false): HostedAgentRecord[] {
+    return (
+      this.database
+        .prepare(`
+          SELECT h.*, c.provider_id, c.user_sub AS connection_owner_sub, c.label AS connection_label
+          FROM hosted_agents h
+          JOIN provider_connections c ON c.id = h.connection_id
+          ${includeDeleted ? "" : "WHERE h.deleted_at IS NULL"}
+          ORDER BY h.created_at
+        `)
+        .all() as Row[]
+    ).map(toHostedAgent);
+  }
+
+  hostedAgentToken(agentId: string): string {
+    const row = this.database
+      .prepare("SELECT agent_token_ciphertext FROM hosted_agents WHERE agent_id = ? AND deleted_at IS NULL")
+      .get(agentId) as Row | undefined;
+    if (!row) throw new FlockError("hosted_agent_not_found", "Hosted agent not found", 404);
+    return this.requireSecrets().open<string>(string(row, "agent_token_ciphertext"));
+  }
+
+  updateHostedAgent(input: {
+    agentId: string;
+    actor: string;
+    connectionId?: string;
+    model?: string;
+    thinkingLevel?: string;
+    desiredState?: HostedAgentDesiredState;
+  }): AgentRecord {
+    const hosted = this.getHostedAgent(input.agentId);
+    const agent = this.getAgent(input.agentId);
+    if (!hosted || !agent || hosted.deletedAt) {
+      throw new FlockError("hosted_agent_not_found", "Hosted agent not found", 404);
+    }
+    const connection = input.connectionId
+      ? this.getProviderConnection(input.connectionId)
+      : this.getProviderConnection(hosted.connectionId);
+    if (!connection || connection.status !== "connected") {
+      throw new FlockError("connection_unavailable", "Choose a connected provider account", 409);
+    }
+    if (input.connectionId && connection.userSub !== input.actor) {
+      throw new FlockError("forbidden", "You may only assign one of your own provider connections", 403);
+    }
+    const model = input.model ?? agent.model;
+    if (!model.startsWith(`${connection.providerId}/`)) {
+      throw new FlockError("provider_mismatch", "The model must belong to the selected provider connection", 400);
+    }
+    const thinkingLevel = input.thinkingLevel ?? agent.thinkingLevel;
+    const now = new Date().toISOString();
+    const capabilities = { ...agent.capabilities, model, thinkingLevel };
+    this.transaction(() => {
+      this.database
+        .prepare(`
+          UPDATE hosted_agents
+          SET connection_id = ?, desired_state = COALESCE(?, desired_state),
+            runtime_state = 'pending', last_error = NULL, updated_at = ?
+          WHERE agent_id = ?
+        `)
+        .run(connection.id, input.desiredState ?? null, now, input.agentId);
+      this.database
+        .prepare(`
+          UPDATE agents SET model = ?, thinking_level = ?, capabilities_json = ?,
+            status = CASE WHEN ? = 'stopped' THEN 'offline' ELSE status END
+          WHERE id = ?
+        `)
+        .run(model, thinkingLevel, JSON.stringify(capabilities), input.desiredState ?? null, input.agentId);
+    });
+    this.audit(input.actor, "hosted_agent.update", input.agentId, {
+      providerId: connection.providerId,
+      desiredState: input.desiredState,
+    });
+    return this.getAgent(input.agentId)!;
+  }
+
+  setHostedAgentRuntime(
+    agentId: string,
+    runtimeState: HostedAgentRuntimeState,
+    input: { containerId?: string | null; error?: string | null } = {},
+  ): HostedAgentRecord {
+    this.database
+      .prepare(`
+        UPDATE hosted_agents SET runtime_state = ?, container_id = ?,
+          last_error = ?, updated_at = ? WHERE agent_id = ? AND deleted_at IS NULL
+      `)
+      .run(runtimeState, input.containerId ?? null, input.error ?? null, new Date().toISOString(), agentId);
+    const hosted = this.getHostedAgent(agentId);
+    if (!hosted) throw new FlockError("hosted_agent_not_found", "Hosted agent not found", 404);
+    return hosted;
+  }
+
+  deleteHostedAgent(input: {
+    agentId: string;
+    actor: string;
+    actorRole: Role;
+    retentionDays: number;
+  }): HostedAgentRecord {
+    const hosted = this.getHostedAgent(input.agentId);
+    if (!hosted || hosted.deletedAt) throw new FlockError("hosted_agent_not_found", "Hosted agent not found", 404);
+    if (hosted.createdBy !== input.actor && input.actorRole !== "admin") {
+      throw new FlockError("forbidden", "Only the creator or an administrator may delete this agent", 403);
+    }
+    const now = new Date();
+    const purgeAfter = new Date(now.getTime() + input.retentionDays * 86_400_000).toISOString();
+    this.transaction(() => {
+      this.database
+        .prepare(`
+          UPDATE hosted_agents SET desired_state = 'stopped', runtime_state = 'deleted',
+            deleted_at = ?, purge_after = ?, updated_at = ? WHERE agent_id = ?
+        `)
+        .run(now.toISOString(), purgeAfter, now.toISOString(), input.agentId);
+      this.database
+        .prepare("UPDATE agents SET status = 'revoked', revoked_at = ? WHERE id = ?")
+        .run(now.toISOString(), input.agentId);
+    });
+    this.audit(input.actor, "hosted_agent.delete", input.agentId, { purgeAfter });
+    return this.getHostedAgent(input.agentId)!;
+  }
+
+  listHostedAgentsDueForPurge(now = new Date()): HostedAgentRecord[] {
+    return (
+      this.database
+        .prepare(`
+          SELECT h.*, c.provider_id, c.user_sub AS connection_owner_sub, c.label AS connection_label
+          FROM hosted_agents h JOIN provider_connections c ON c.id = h.connection_id
+          WHERE h.deleted_at IS NOT NULL AND h.purge_after <= ?
+        `)
+        .all(now.toISOString()) as Row[]
+    ).map(toHostedAgent);
+  }
+
+  purgeHostedAgent(agentId: string): void {
+    this.database
+      .prepare(`
+        UPDATE hosted_agents SET purge_after = NULL, container_id = NULL,
+          last_error = 'Workspace retention period ended; workspace was purged', updated_at = ?
+        WHERE agent_id = ? AND deleted_at IS NOT NULL
+      `)
+      .run(new Date().toISOString(), agentId);
+  }
+
+  readHostedAgentCredential(agentId: string): {
+    connection: ProviderConnectionRecord;
+    credential: Credential;
+  } {
+    const hosted = this.getHostedAgent(agentId);
+    if (!hosted || hosted.deletedAt) throw new FlockError("hosted_agent_not_found", "Hosted agent not found", 404);
+    return this.readProviderCredential(hosted.connectionId);
   }
 
   updateAgentPresence(id: string, status: AgentStatus, capabilities?: AgentCapabilities): AgentRecord {
@@ -488,6 +961,14 @@ export class ControlDatabase {
         const agent = this.getAgent(agentId);
         if (!agent || agent.projectId !== input.projectId || agent.revokedAt) {
           throw new FlockError("invalid_target", `Agent ${agentId} cannot receive this dispatch`, 409);
+        }
+        if (
+          agent.hosting &&
+          (agent.hosting.desiredState !== "running" ||
+            agent.hosting.runtimeState === "attention" ||
+            this.getProviderConnection(agent.hosting.connectionId)?.status !== "connected")
+        ) {
+          throw new FlockError("agent_unavailable", `Hosted agent ${agent.name} requires attention`, 409);
         }
       }
       const now = new Date().toISOString();
@@ -675,6 +1156,25 @@ export class ControlDatabase {
     return job;
   }
 
+  abortActiveJobsForAgent(agentId: string, actor: string): JobRecord[] {
+    const rows = this.database
+      .prepare(`
+        SELECT * FROM jobs
+        WHERE (target_agent_id = ? OR assigned_agent_id = ?)
+          AND status IN ('queued', 'offered', 'running')
+      `)
+      .all(agentId, agentId) as Row[];
+    const aborted: JobRecord[] = [];
+    for (const row of rows) {
+      try {
+        aborted.push(this.abortJob(string(row, "id"), actor));
+      } catch (error) {
+        if (!(error instanceof FlockError) || error.code !== "job_not_active") throw error;
+      }
+    }
+    return aborted;
+  }
+
   expireLeases(now = new Date()): JobRecord[] {
     const expired = (
       this.database
@@ -779,6 +1279,22 @@ export class ControlDatabase {
     this.database
       .prepare("INSERT INTO audit_log(occurred_at, actor, action, target, details_json) VALUES (?, ?, ?, ?, ?)")
       .run(new Date().toISOString(), actor, action, target, JSON.stringify(details));
+  }
+
+  private attachHosting(agent: AgentRecord): AgentRecord {
+    agent.hosting = this.getHostedAgent(agent.id) ?? null;
+    return agent;
+  }
+
+  private requireSecrets(): SecretBox {
+    if (!this.secrets) {
+      throw new FlockError(
+        "hosted_agents_disabled",
+        "Hosted-agent credential protection is not configured",
+        503,
+      );
+    }
+    return this.secrets;
   }
 
   private refreshDispatchStatus(dispatchId: string): void {
