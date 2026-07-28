@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 type NavKey = "chat" | "activity" | "tasks" | "members" | "computers" | "settings";
 type ChatTab = "chat" | "tasks" | "files";
@@ -17,6 +17,80 @@ type SettingKey =
   | "about"
   | "documentation"
   | "release-notes";
+
+type UiTask = {
+  title: string;
+  status: string;
+  assignees: string[];
+  due: string;
+};
+
+type UiMessage = {
+  id: string | number;
+  kind: string;
+  name: string;
+  handle: string;
+  time: string;
+  avatar: string;
+  color: string;
+  text?: string;
+  detail?: string;
+  thread?: string;
+  reactions?: string[];
+  task?: UiTask;
+  timestamp?: number;
+};
+
+type HubProject = {
+  id: string;
+  name: string;
+  slug: string;
+};
+
+type HubAgent = {
+  id: string;
+  name: string;
+  status: string;
+  model: string;
+  thinkingLevel: string;
+};
+
+type HubJob = {
+  id: string;
+  targetAgentId: string;
+  assignedAgentId: string | null;
+  status: string;
+  branchLeafId: string | null;
+};
+
+type HubDispatch = {
+  id: string;
+  text: string;
+  userSub: string;
+  status: string;
+  selectedLeafId: string | null;
+  createdAt: string;
+  jobs: HubJob[];
+};
+
+type HubEntry = {
+  seq: number;
+  entry: {
+    type: string;
+    id: string;
+    parentId: string | null;
+    timestamp: string;
+    message?: {
+      role?: string;
+      content?: string | Array<Record<string, unknown>>;
+      provider?: string;
+      model?: string;
+      stopReason?: string;
+    };
+    customType?: string;
+    data?: Record<string, unknown>;
+  };
+};
 
 const navItems: Array<{ key: NavKey; icon: string; label: string; badge?: boolean }> = [
   { key: "chat", icon: "◫", label: "Chat" },
@@ -56,7 +130,7 @@ const settingGroups: Array<{ title: string; items: Array<{ key: SettingKey; labe
   },
 ];
 
-const baseMessages = [
+const baseMessages: UiMessage[] = [
   {
     id: 1,
     kind: "human",
@@ -121,6 +195,222 @@ const files = [
   { name: "hub-architecture.png", meta: "PNG · 1.4 MB", by: "Edward", icon: "PX" },
   { name: "recovery.test.ts", meta: "TypeScript · 24 KB", by: "Cindy", icon: "TS" },
 ];
+
+function useHubState() {
+  const [identity, setIdentity] = useState<{ sub: string; displayName: string; role: string } | null>(null);
+  const [projects, setProjects] = useState<HubProject[]>([]);
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [agents, setAgents] = useState<HubAgent[]>([]);
+  const [dispatches, setDispatches] = useState<HubDispatch[]>([]);
+  const [entries, setEntries] = useState<HubEntry[]>([]);
+  const [connection, setConnection] = useState<"connecting" | "live" | "offline">("connecting");
+
+  const fetchJson = useCallback(async <Value,>(path: string, init?: RequestInit): Promise<Value> => {
+    const response = await fetch(path, {
+      ...init,
+      headers: { "Content-Type": "application/json", ...init?.headers },
+    });
+    if (response.status === 401) {
+      window.location.assign(`/api/v1/auth/login?returnTo=${encodeURIComponent(window.location.pathname)}`);
+      throw new Error("Sign-in required");
+    }
+    const body = (await response.json()) as Value & { error?: { message?: string } };
+    if (!response.ok) throw new Error(body.error?.message ?? `Hub returned HTTP ${response.status}`);
+    return body;
+  }, []);
+
+  const refreshProject = useCallback(async (selectedProjectId: string) => {
+    const [agentsResult, treeResult, dispatchResult] = await Promise.all([
+      fetchJson<{ agents: HubAgent[] }>(`/api/v1/projects/${encodeURIComponent(selectedProjectId)}/agents`),
+      fetchJson<{ session: { entries: HubEntry[] } }>(
+        `/api/v1/projects/${encodeURIComponent(selectedProjectId)}/tree`,
+      ),
+      fetchJson<{ dispatches: HubDispatch[] }>(
+        `/api/v1/projects/${encodeURIComponent(selectedProjectId)}/dispatches`,
+      ),
+    ]);
+    setAgents(agentsResult.agents);
+    setEntries(treeResult.session.entries);
+    setDispatches(dispatchResult.dispatches);
+  }, [fetchJson]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([
+      fetchJson<{ user: { sub: string; displayName: string; role: string } }>("/api/v1/me"),
+      fetchJson<{ projects: HubProject[] }>("/api/v1/projects"),
+    ])
+      .then(([me, projectResult]) => {
+        if (cancelled) return;
+        setIdentity(me.user);
+        setProjects(projectResult.projects);
+        setProjectId((current) => current ?? projectResult.projects[0]?.id ?? null);
+        setConnection("live");
+      })
+      .catch(() => {
+        if (!cancelled) setConnection("offline");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchJson]);
+
+  useEffect(() => {
+    if (!projectId) return;
+    void refreshProject(projectId).catch(() => setConnection("offline"));
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const socket = new WebSocket(
+      `${protocol}//${window.location.host}/api/v1/events?projectId=${encodeURIComponent(projectId)}`,
+    );
+    let refreshTimer: number | undefined;
+    socket.onopen = () => setConnection("live");
+    socket.onmessage = () => {
+      window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        void refreshProject(projectId);
+      }, 40);
+    };
+    socket.onclose = () => setConnection("offline");
+    return () => {
+      window.clearTimeout(refreshTimer);
+      socket.close();
+    };
+  }, [projectId, refreshProject]);
+
+  const messages = useMemo<UiMessage[]>(() => {
+    if (!projectId || connection === "offline") return baseMessages;
+    const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
+    const entriesById = new Map(entries.map(({ entry }) => [entry.id, entry]));
+    const agentForEntry = (entry: HubEntry["entry"]): HubAgent | undefined => {
+      let cursor: HubEntry["entry"] | undefined = entry;
+      while (cursor) {
+        if (
+          cursor.type === "custom" &&
+          ["flock.agent_turn", "flock.recovery"].includes(cursor.customType ?? "") &&
+          typeof cursor.data?.agentId === "string"
+        ) {
+          return agentsById.get(cursor.data.agentId);
+        }
+        cursor = cursor.parentId ? entriesById.get(cursor.parentId) : undefined;
+      }
+      return undefined;
+    };
+    const humanMessages: UiMessage[] = dispatches.map((dispatch) => ({
+      id: dispatch.id,
+      kind: "human",
+      name: identity?.displayName ?? "Member",
+      handle: `@${dispatch.userSub}`,
+      time: formatTime(dispatch.createdAt),
+      timestamp: Date.parse(dispatch.createdAt),
+      avatar: initials(identity?.displayName ?? "Member"),
+      color: "yellow",
+      text: dispatch.text,
+      reactions: [],
+    }));
+    const agentMessages: UiMessage[] = entries.flatMap(({ entry }) => {
+      if (entry.type !== "message" || entry.message?.role !== "assistant") return [];
+      const agent = agentForEntry(entry);
+      const text = messageText(entry.message.content);
+      if (!text && entry.message.stopReason !== "error") return [];
+      return [{
+        id: entry.id,
+        kind: "agent",
+        name: agent?.name ?? "Agent",
+        handle: `agent · ${entry.message.provider ?? "pi"}`,
+        time: formatTime(entry.timestamp),
+        timestamp: Date.parse(entry.timestamp),
+        avatar: initials(agent?.name ?? "Agent"),
+        color: agentColor(agent?.id ?? entry.id),
+        text: text || "The model run ended with an error.",
+        detail: `${entry.message.model ?? "model"} · ${entry.message.stopReason ?? "complete"}`,
+        reactions: [],
+      }];
+    });
+    return [...humanMessages, ...agentMessages].sort(
+      (left, right) => (left.timestamp ?? 0) - (right.timestamp ?? 0),
+    );
+  }, [agents, connection, dispatches, entries, identity, projectId]);
+
+  const sendDispatch = useCallback(async (text: string, targetAgentIds: string[]) => {
+    if (!projectId) throw new Error("No project is selected");
+    await fetchJson(`/api/v1/projects/${encodeURIComponent(projectId)}/dispatches`, {
+      method: "POST",
+      body: JSON.stringify({ text, targetAgentIds }),
+    });
+    await refreshProject(projectId);
+  }, [fetchJson, projectId, refreshProject]);
+
+  const selectBranch = useCallback(async (dispatchId: string, leafId: string) => {
+    await fetchJson(`/api/v1/dispatches/${encodeURIComponent(dispatchId)}/select`, {
+      method: "POST",
+      body: JSON.stringify({ leafId }),
+    });
+    if (projectId) await refreshProject(projectId);
+  }, [fetchJson, projectId, refreshProject]);
+
+  const createEnrollment = useCallback(async (name: string) => {
+    if (!projectId) throw new Error("No project is selected");
+    const result = await fetchJson<{ enrollment: { secret: string; expiresAt: string } }>(
+      `/api/v1/projects/${encodeURIComponent(projectId)}/enrollments`,
+      {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      },
+    );
+    return result.enrollment;
+  }, [fetchJson, projectId]);
+
+  return {
+    identity,
+    projects,
+    project: projects.find((project) => project.id === projectId) ?? null,
+    projectId,
+    setProjectId,
+    agents,
+    dispatches,
+    messages,
+    connection,
+    sendDispatch,
+    selectBranch,
+    createEnrollment,
+  };
+}
+
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .flatMap((value) => {
+      if (typeof value !== "object" || value === null) return [];
+      const block = value as Record<string, unknown>;
+      return typeof block.text === "string"
+        ? [block.text]
+        : typeof block.thinking === "string"
+          ? []
+          : [];
+    })
+    .join("\n");
+}
+
+function initials(name: string): string {
+  return name
+    .split(/\s+/)
+    .map((part) => part[0] ?? "")
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+}
+
+function agentColor(value: string): string {
+  return ["blue", "purple", "green", "pink"][value.split("").reduce((sum, char) => sum + char.charCodeAt(0), 0) % 4]!;
+}
+
+function formatTime(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? ""
+    : date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
 
 function PixelAvatar({
   text,
@@ -232,18 +522,24 @@ function ConversationSidebar({
   onChannel,
   mobileOpen,
   onClose,
+  project,
+  agents,
+  identity,
 }: {
   current: string;
   onChannel: (channel: string) => void;
   mobileOpen: boolean;
   onClose: () => void;
+  project: HubProject | null;
+  agents: HubAgent[];
+  identity: { displayName: string; role: string } | null;
 }) {
   return (
     <aside className={`conversation-sidebar ${mobileOpen ? "mobile-open" : ""}`}>
       <div className="workspace-title">
         <div>
           <span className="eyebrow">WORKSPACE</span>
-          <strong>Raft Works</strong>
+          <strong>{project?.name ?? "Raft Works"}</strong>
         </div>
         <button onClick={onClose} aria-label="Close sidebar">×</button>
       </div>
@@ -277,21 +573,21 @@ function ConversationSidebar({
           ))}
         </Section>
         <Section title="Direct Messages" action="+">
-          <button className="conversation-item">
-            <PixelAvatar text="SH" color="blue" size="sm" />
-            shark
-            <i className="presence online" />
-          </button>
-          <button className="conversation-item">
-            <PixelAvatar text="CI" color="purple" size="sm" />
-            Cindy
-            <i className="presence busy" />
-          </button>
+          {(agents.length ? agents : [
+            { id: "shark", name: "shark", status: "online", model: "", thinkingLevel: "" },
+            { id: "cindy", name: "Cindy", status: "busy", model: "", thinkingLevel: "" },
+          ]).map((agent) => (
+            <button className="conversation-item" key={agent.id}>
+              <PixelAvatar text={initials(agent.name)} color={agentColor(agent.id)} size="sm" />
+              {agent.name}
+              <i className={`presence ${agent.status === "offline" ? "" : agent.status === "busy" ? "busy" : "online"}`} />
+            </button>
+          ))}
         </Section>
       </div>
       <div className="current-user">
-        <PixelAvatar text="ED" color="yellow" />
-        <div><strong>Edward</strong><span>Owner · Online</span></div>
+        <PixelAvatar text={initials(identity?.displayName ?? "Edward")} color="yellow" />
+        <div><strong>{identity?.displayName ?? "Edward"}</strong><span>{identity?.role === "admin" ? "Owner" : "Member"} · Online</span></div>
         <button>•••</button>
       </div>
     </aside>
@@ -301,18 +597,9 @@ function ConversationSidebar({
 function Message({
   message,
 }: {
-  message: (typeof baseMessages)[number] | {
-    id: number;
-    kind: string;
-    name: string;
-    handle: string;
-    time: string;
-    avatar: string;
-    color: string;
-    text: string;
-  };
+  message: UiMessage;
 }) {
-  if ("task" in message && message.task) {
+  if (message.task) {
     return (
       <article className="message-row task-message">
         <PixelAvatar text={message.avatar} color={message.color} />
@@ -344,10 +631,10 @@ function Message({
           <span>{message.handle}</span>
           <time>{message.time}</time>
         </div>
-        {"text" in message && <p>{message.text}</p>}
-        {"detail" in message && message.detail && <div className="agent-detail"><span className="pulse-dot" />{message.detail}</div>}
-        {"thread" in message && message.thread && <button className="thread-preview"><span className="thread-lines">↳</span>{message.thread}<b>→</b></button>}
-        {"reactions" in message && message.reactions && (
+        {message.text && <p>{message.text}</p>}
+        {message.detail && <div className="agent-detail"><span className="pulse-dot" />{message.detail}</div>}
+        {message.thread && <button className="thread-preview"><span className="thread-lines">↳</span>{message.thread}<b>→</b></button>}
+        {message.reactions && (
           <div className="reactions">{message.reactions.map((reaction) => <button key={reaction}>{reaction}</button>)}<button>＋</button></div>
         )}
       </div>
@@ -405,15 +692,39 @@ function Composer({
   );
 }
 
-function ChannelWorkspace({ onOpenSidebar }: { onOpenSidebar: () => void }) {
+function ChannelWorkspace({
+  onOpenSidebar,
+  messages: hubMessages,
+  agents,
+  dispatches,
+  connection,
+  onDispatch,
+  onSelectBranch,
+}: {
+  onOpenSidebar: () => void;
+  messages: UiMessage[];
+  agents: HubAgent[];
+  dispatches: HubDispatch[];
+  connection: "connecting" | "live" | "offline";
+  onDispatch: (text: string, targetAgentIds: string[]) => Promise<void>;
+  onSelectBranch: (dispatchId: string, leafId: string) => Promise<void>;
+}) {
   const [tab, setTab] = useState<ChatTab>("chat");
-  const [messages, setMessages] = useState(baseMessages);
+  const [localMessages, setLocalMessages] = useState<UiMessage[]>([]);
   const [muted, setMuted] = useState(false);
   const [agentMenu, setAgentMenu] = useState(false);
+  const [targets, setTargets] = useState<string[]>([]);
+
+  useEffect(() => {
+    setTargets((current) => {
+      const valid = current.filter((id) => agents.some((agent) => agent.id === id));
+      return valid.length > 0 ? valid : agents.filter((agent) => agent.status !== "revoked").map((agent) => agent.id);
+    });
+  }, [agents]);
 
   function send(text: string, asTask: boolean) {
-    const next = asTask
-      ? {
+    if (asTask) {
+      const next: UiMessage = {
           id: Date.now(),
           kind: "task",
           name: "Task created",
@@ -422,19 +733,35 @@ function ChannelWorkspace({ onOpenSidebar }: { onOpenSidebar: () => void }) {
           avatar: "✓",
           color: "pink",
           task: { title: text, status: "TODO", assignees: ["ED"], due: "No due date" },
-        }
-      : {
-          id: Date.now(),
-          kind: "human",
-          name: "Edward",
-          handle: "@edward",
-          time: "now",
-          avatar: "ED",
-          color: "yellow",
-          text,
-          reactions: [],
         };
-    setMessages((current) => [...current, next as (typeof baseMessages)[number]]);
+      setLocalMessages((current) => [...current, next]);
+      return;
+    }
+    if (targets.length === 0) {
+      setLocalMessages((current) => [...current, {
+        id: Date.now(),
+        kind: "agent",
+        name: "Hub",
+        handle: "system",
+        time: "now",
+        avatar: "!",
+        color: "pink",
+        text: "Choose at least one enrolled agent before sending.",
+      }]);
+      return;
+    }
+    void onDispatch(text, targets).catch((error: unknown) => {
+      setLocalMessages((current) => [...current, {
+        id: Date.now(),
+        kind: "agent",
+        name: "Hub",
+        handle: "system",
+        time: "now",
+        avatar: "!",
+        color: "pink",
+        text: error instanceof Error ? error.message : "The dispatch could not be sent.",
+      }]);
+    });
   }
 
   return (
@@ -442,7 +769,7 @@ function ChannelWorkspace({ onOpenSidebar }: { onOpenSidebar: () => void }) {
       <header className="channel-header">
         <button className="mobile-sidebar-toggle" onClick={onOpenSidebar}>☰</button>
         <div className="channel-identity">
-          <div><h1><span>#</span> all</h1><StatusPill tone="green">LIVE</StatusPill></div>
+          <div><h1><span>#</span> all</h1><StatusPill tone={connection === "live" ? "green" : "pink"}>{connection.toUpperCase()}</StatusPill></div>
           <p>Company-wide coordination, agent updates, and launch decisions.</p>
         </div>
         <div className="channel-actions">
@@ -450,13 +777,28 @@ function ChannelWorkspace({ onOpenSidebar }: { onOpenSidebar: () => void }) {
           <button className={muted ? "pink-active" : ""} title="Mute channel" onClick={() => setMuted(!muted)}>{muted ? "◉" : "◌"}</button>
           <button className={agentMenu ? "pink-active" : ""} title="Agents" onClick={() => setAgentMenu(!agentMenu)}>⌘</button>
           <button title="Channel settings">•••</button>
-          <button className="member-count"><span className="mini-stack"><i>ED</i><i>SH</i></span>18</button>
+          <button className="member-count"><span className="mini-stack"><i>YOU</i><i>AI</i></span>{agents.length + 1}</button>
         </div>
         {agentMenu && (
           <div className="agent-popover">
-            <span className="eyebrow">ACTIVE AGENTS</span>
-            <div><PixelAvatar text="SH" color="blue" size="sm" /><p><strong>shark</strong><small>Indexing tests…</small></p><i className="presence online" /></div>
-            <div><PixelAvatar text="CI" color="purple" size="sm" /><p><strong>Cindy</strong><small>Reviewing recovery</small></p><i className="presence busy" /></div>
+            <span className="eyebrow">DISPATCH TO</span>
+            {agents.map((agent) => (
+              <button
+                type="button"
+                className="agent-target"
+                key={agent.id}
+                onClick={() => setTargets((current) =>
+                  current.includes(agent.id)
+                    ? current.filter((id) => id !== agent.id)
+                    : [...current, agent.id],
+                )}
+              >
+                <PixelAvatar text={initials(agent.name)} color={agentColor(agent.id)} size="sm" />
+                <p><strong>{agent.name}</strong><small>{agent.model} · {agent.status}</small></p>
+                <b>{targets.includes(agent.id) ? "✓" : "○"}</b>
+              </button>
+            ))}
+            {agents.length === 0 && <p className="agent-empty">Enroll an agent to dispatch work.</p>}
           </div>
         )}
       </header>
@@ -478,8 +820,26 @@ function ChannelWorkspace({ onOpenSidebar }: { onOpenSidebar: () => void }) {
             </div>
             <div className="date-separator"><span>MONDAY, JULY 27</span></div>
             <div className="system-event"><span>✦</span><p><strong>Cindy joined #all</strong> via the owner onboarding flow.</p><time>9:32 AM</time></div>
-            {messages.map((message) => <Message key={message.id} message={message} />)}
-            <div className="agent-typing"><PixelAvatar text="SH" color="blue" size="sm" /><span><i /><i /><i /></span><p>shark is checking the build</p></div>
+            {[...hubMessages, ...localMessages].map((message) => <Message key={message.id} message={message} />)}
+            {dispatches.filter((dispatch) => dispatch.status === "awaiting_selection").map((dispatch) => (
+              <article className="branch-selector" key={dispatch.id}>
+                <div><StatusPill tone="pink">CHOOSE BRANCH</StatusPill><h3>{dispatch.text}</h3></div>
+                <div>
+                  {dispatch.jobs.filter((job) => job.status === "completed" && job.branchLeafId).map((job) => {
+                    const agent = agents.find((candidate) => candidate.id === (job.assignedAgentId ?? job.targetAgentId));
+                    return (
+                      <button key={job.id} onClick={() => void onSelectBranch(dispatch.id, job.branchLeafId!)}>
+                        <PixelAvatar text={initials(agent?.name ?? "AI")} color={agentColor(agent?.id ?? job.id)} size="sm" />
+                        Use {agent?.name ?? "agent"}’s branch <span>→</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </article>
+            ))}
+            {agents.some((agent) => agent.status === "busy") && (
+              <div className="agent-typing"><PixelAvatar text="AI" color="blue" size="sm" /><span><i /><i /><i /></span><p>An agent is working</p></div>
+            )}
           </div>
           <Composer onSend={send} agentName="shark" />
         </>
@@ -807,22 +1167,83 @@ function SettingsWorkspace({
   );
 }
 
-function UtilityPage({ active }: { active: Exclude<NavKey, "chat" | "settings"> }) {
+function UtilityPage({
+  active,
+  agents = [],
+  onCreateEnrollment,
+}: {
+  active: Exclude<NavKey, "chat" | "settings">;
+  agents?: HubAgent[];
+  onCreateEnrollment?: (name: string) => Promise<{ secret: string; expiresAt: string }>;
+}) {
+  const [agentName, setAgentName] = useState("");
+  const [enrollment, setEnrollment] = useState<{ secret: string; expiresAt: string } | null>(null);
+  const [enrollmentError, setEnrollmentError] = useState("");
+  const [hubOrigin, setHubOrigin] = useState("https://your-hub.example");
+  useEffect(() => setHubOrigin(window.location.origin), []);
   const data = {
     activity: { title: "Activity", copy: "Everything that needs your attention.", metric: "6 unread events", icon: "↗" },
     tasks: { title: "Tasks", copy: "Work assigned to you and your agents.", metric: "3 due today", icon: "✓" },
     members: { title: "Members", copy: "People and agents across Raft Works.", metric: "18 members · 4 agents", icon: "♙" },
     computers: { title: "Computers", copy: "Machines connected to this server.", metric: "1 computer needs attention", icon: "▣" },
   }[active];
+  if (active === "computers") {
+    const installCommand = enrollment
+      ? `npm install -g @flock-works/flock@latest && flock agent install --hub ${hubOrigin} --enrollment ${enrollment.secret} --workspace "$PWD" --name ${JSON.stringify(agentName || "agent")}`
+      : "";
+    return (
+      <main className="utility-page">
+        <div className="utility-hero"><span>{data.icon}</span><div><p className="eyebrow">RAFT WORKS</p><h1>{data.title}</h1><p>{data.copy}</p></div></div>
+        <section className="utility-card enrollment-card">
+          <StatusPill tone="yellow">ONE-LINE INSTALL</StatusPill>
+          <h2>Enroll a long-running Pi agent</h2>
+          <p>Create a single-use token, then run the generated command on macOS, Linux, or Windows.</p>
+          <div className="enrollment-form">
+            <input value={agentName} onChange={(event) => setAgentName(event.target.value)} placeholder="Agent name, e.g. shark" />
+            <button
+              className="black-button"
+              onClick={() => {
+                setEnrollmentError("");
+                void onCreateEnrollment?.(agentName.trim() || "agent")
+                  .then(setEnrollment)
+                  .catch((error: unknown) => setEnrollmentError(error instanceof Error ? error.message : "Could not create token"));
+              }}
+            >
+              Create token
+            </button>
+          </div>
+          {enrollment && (
+            <div className="install-command">
+              <code>{installCommand}</code>
+              <button onClick={() => void navigator.clipboard.writeText(installCommand)}>Copy</button>
+              <small>Expires {new Date(enrollment.expiresAt).toLocaleString()} · shown once</small>
+            </div>
+          )}
+          {enrollmentError && <p className="form-error">{enrollmentError}</p>}
+        </section>
+        <section className="computer-list">
+          {agents.map((agent) => (
+            <article key={agent.id}>
+              <PixelAvatar text={initials(agent.name)} color={agentColor(agent.id)} />
+              <div><h2>{agent.name}</h2><p>{agent.model} · thinking {agent.thinkingLevel}</p></div>
+              <StatusPill tone={agent.status === "offline" ? "pink" : agent.status === "busy" ? "yellow" : "green"}>{agent.status.toUpperCase()}</StatusPill>
+            </article>
+          ))}
+          {agents.length === 0 && <article><div><h2>No agents enrolled</h2><p>Create the first installation token above.</p></div></article>}
+        </section>
+      </main>
+    );
+  }
   return (
     <main className="utility-page">
       <div className="utility-hero"><span>{data.icon}</span><div><p className="eyebrow">RAFT WORKS</p><h1>{data.title}</h1><p>{data.copy}</p></div></div>
-      <section className="utility-card"><StatusPill tone={active === "computers" ? "pink" : "yellow"}>{data.metric.toUpperCase()}</StatusPill><h2>Your workspace is in sync.</h2><p>This focused view is ready for the server-backed activity stream.</p><button className="black-button">View details</button></section>
+      <section className="utility-card"><StatusPill tone="yellow">{data.metric.toUpperCase()}</StatusPill><h2>Your workspace is in sync.</h2><p>This focused view is ready for the server-backed activity stream.</p><button className="black-button">View details</button></section>
     </main>
   );
 }
 
 export default function Home() {
+  const hub = useHubState();
   const [activeNav, setActiveNav] = useState<NavKey>("chat");
   const [setting, setSetting] = useState<SettingKey>("account");
   const [channel, setChannel] = useState("all");
@@ -833,15 +1254,33 @@ export default function Home() {
 
   const content = useMemo(() => {
     if (activeNav === "settings") return <SettingsWorkspace setting={setting} onSetting={setSetting} onToast={showToast} />;
-    if (activeNav !== "chat") return <UtilityPage active={activeNav} />;
+    if (activeNav !== "chat") {
+      return <UtilityPage active={activeNav} agents={hub.agents} onCreateEnrollment={hub.createEnrollment} />;
+    }
     return (
       <>
-        <ConversationSidebar current={channel} onChannel={setChannel} mobileOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
-        <ChannelWorkspace onOpenSidebar={() => setSidebarOpen(true)} />
+        <ConversationSidebar
+          current={channel}
+          onChannel={setChannel}
+          mobileOpen={sidebarOpen}
+          onClose={() => setSidebarOpen(false)}
+          project={hub.project}
+          agents={hub.agents}
+          identity={hub.identity}
+        />
+        <ChannelWorkspace
+          onOpenSidebar={() => setSidebarOpen(true)}
+          messages={hub.messages}
+          agents={hub.agents}
+          dispatches={hub.dispatches}
+          connection={hub.connection}
+          onDispatch={hub.sendDispatch}
+          onSelectBranch={hub.selectBranch}
+        />
       </>
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeNav, channel, setting, sidebarOpen]);
+  }, [activeNav, channel, setting, sidebarOpen, hub]);
 
   function showToast(message: string) {
     setToast(message);
@@ -855,8 +1294,21 @@ export default function Home() {
       {serverOpen && (
         <div className="server-switcher">
           <span className="eyebrow">YOUR SERVERS</span>
-          <button className="active"><span className="server-mark mini">R</span><div><strong>Raft Works</strong><small>18 members</small></div><b>✓</b></button>
-          <button><span className="server-mark mini alt">L</span><div><strong>Local Lab</strong><small>3 members</small></div></button>
+          {hub.projects.map((project, index) => (
+            <button
+              className={hub.projectId === project.id ? "active" : ""}
+              key={project.id}
+              onClick={() => {
+                hub.setProjectId(project.id);
+                setServerOpen(false);
+              }}
+            >
+              <span className={`server-mark mini ${index ? "alt" : ""}`}>{project.name[0]?.toUpperCase()}</span>
+              <div><strong>{project.name}</strong><small>{project.slug}</small></div>
+              {hub.projectId === project.id && <b>✓</b>}
+            </button>
+          ))}
+          {hub.projects.length === 0 && <button className="active"><span className="server-mark mini">R</span><div><strong>Raft Works</strong><small>Connecting…</small></div></button>}
           <button className="add-server">＋ Create or join server</button>
         </div>
       )}

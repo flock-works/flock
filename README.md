@@ -1,98 +1,96 @@
-# vinext-starter
+# Flock
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+Flock is a self-hosted collaboration hub for long-running AI agents built on
+[`earendil-works/pi`](https://github.com/earendil-works/pi). Every project owns one
+canonical Pi v3 JSONL session tree. Agents keep exact local mirrors, execute in
+their own workspaces, and append leased branches through the hub.
 
-## Prerequisites
+Requires Node.js 22.19 or newer.
 
-- Node.js `>=22.13.0`
+## Start a hub
 
-## Quick Start
+For a local evaluation, this is the complete one-line server:
+
+```bash
+npx --yes @flock-works/flock@latest hub serve --data ./flock-data --listen 127.0.0.1:4747 --public-url http://127.0.0.1:4747 --dev-auth
+```
+
+`--dev-auth` is deliberately restricted to loopback. A production hub uses OIDC,
+HTTPS, and group mapping:
+
+```bash
+FLOCK_COOKIE_SECRET="$(openssl rand -hex 32)" OIDC_ISSUER="https://id.example.com" OIDC_CLIENT_ID="flock" OIDC_CLIENT_SECRET="…" FLOCK_OIDC_ALLOWED_GROUP="flock-members" FLOCK_OIDC_ADMIN_GROUP="flock-admins" npx --yes @flock-works/flock@latest hub serve --data /srv/flock --listen 0.0.0.0:4747 --public-url https://flock.example.com
+```
+
+The hub creates the first `Raft Works` project automatically. Open the web app,
+choose **Computers**, enter an agent name, and create a single-use enrollment
+token.
+
+For active/passive high availability, run a second hub against the same shared
+data directory. The filesystem leader lock permits exactly one writer; standby
+nodes report `503` from `/readyz` until they acquire leadership.
+
+## Install an agent
+
+Run the generated one-line command on the computer that should host the agent:
+
+```bash
+npm install -g @flock-works/flock@latest && flock agent install --hub https://flock.example.com --enrollment 'enr_…' --workspace "$PWD" --name shark
+```
+
+This exchanges the one-time token, writes the agent credential with owner-only
+permissions, and installs a persistent user service:
+
+- macOS: LaunchAgent
+- Linux: systemd user service
+- Windows: Task Scheduler login task
+
+The default model is `anthropic/claude-sonnet-4-6`. Provider credentials stay on
+the agent machine and are resolved by `pi-ai`, for example
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or the provider’s supported ambient
+credentials. Override the model with `--model provider/model-id`.
+For a background service, put provider keys in an owner-only file such as
+`~/.config/flock/provider.env` (`chmod 600`) and add
+`--env-file ~/.config/flock/provider.env` to the install command. Flock loads
+that file inside the service process without sending its contents to the hub.
+
+Useful lifecycle commands:
+
+```bash
+flock agent status
+flock agent stop
+flock agent start
+flock agent uninstall
+```
+
+`uninstall` removes only the service. It keeps the protected agent identity and
+session mirror.
+
+## Data model and recovery
+
+- `projects/<project-id>/session.jsonl` is the canonical, fsynced Pi v3 tree.
+- `control.sqlite` stores identities, enrollment tokens, presence, dispatches,
+  jobs, lease epochs, cursors, and audit records.
+- Agents receive a full snapshot or cursor-based increment and persist the same
+  JSONL locally.
+- Each dispatch creates one leased branch per selected agent. A single completed
+  branch is selected automatically; multi-agent dispatches require a human
+  choice in chat.
+- Expired work may be resumed by any agent in the project. If a crash left an
+  assistant tool call without a result, the recovering agent appends an error
+  result and does not replay the unknown side effect.
+- Startup repairs only a torn final JSONL line and reconciles the SQLite entry
+  index from the canonical file.
+
+## Development
 
 ```bash
 npm install
-npm run dev
-npm run build
+npm test
+npm run dev:hub
 ```
 
-This starter does not use `wrangler.jsonc`.
-
-## Included Shape
-
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
-```
-
-## Optional Dispatch-Owned ChatGPT Sign-In
-
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
-
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+The test suite checks upstream Pi JSONL compatibility, tree branches and cursors,
+torn-tail repair, enrollment and authentication, dispatch leasing and stale
+epochs, leader exclusion, exact agent mirroring, tool execution, non-replaying
+recovery, service definitions, the production build, and rendered HTML.
