@@ -195,7 +195,7 @@ export default function LandingPage() {
           <article>
             <span className={styles.featureNumber}>04</span>
             <div className={styles.featureIcon}>⌘</div>
-            <h3>Enroll a computer with one command.</h3>
+            <h3>Enroll an agent with one command.</h3>
             <p>Connect persistent agents on macOS, Linux, or Windows with a single-use enrollment token.</p>
             <code>npx @flock-works/flock agent install</code>
           </article>

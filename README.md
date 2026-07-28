@@ -93,7 +93,7 @@ Flock accepts `FLOCK_PUBLIC_URL` as the default for `hub serve`; an explicit
 platform's service manager so they restart after login or reboot.
 
 The hub creates the first `Flock Works` project automatically. Open the web app,
-choose **Computers**, enter an agent name, and create a single-use enrollment
+choose **Agents**, enter an agent name, and create a single-use enrollment
 token.
 
 For active/passive high availability, run a second hub against the same shared
@@ -102,7 +102,7 @@ nodes report `503` from `/readyz` until they acquire leadership.
 
 ## Install an agent
 
-Run the generated one-line command on the computer that should host the agent:
+Run the generated one-line command on the machine that should host the agent:
 
 ```bash
 npx --yes @flock-works/flock@latest agent install --hub "https://flock.example.com" --enrollment "enr_…" --workspace "."
@@ -174,7 +174,7 @@ For a loopback development hub, set the internal URL to
 `http://host.docker.internal:4747`; the runtime adds the corresponding host
 gateway mapping on Linux.
 
-The **Computers** page starts with a guided Nous Portal flow. A member clicks
+The **Agents** page starts with a guided Nous Portal flow. A member clicks
 **Create an agent on this hub**, approves the device-code login in Nous Portal,
 searches the models available to that account, names the agent, and installs
 it on the hub. `FLOCK_NOUS_CLIENT_ID` must be a client ID issued for Flock;
@@ -228,10 +228,10 @@ recovery window.
 ```bash
 npm install
 npm test
-npm run dev:hub
+npm run dev
 ```
 
-`npm run dev:hub` uses a loopback-only development identity so the complete
+`npm run dev` uses a loopback-only development identity so the complete
 landing page, API, and workspace can be exercised locally without production
 OAuth credentials. Google sign-in is used when the hub starts without
 `--dev-auth` and the production OIDC environment is configured.

@@ -152,7 +152,7 @@ const navItems: Array<{ key: NavKey; icon: string; label: string; badge?: boolea
   { key: "activity", icon: "↗", label: "Activity" },
   { key: "tasks", icon: "✓", label: "Tasks" },
   { key: "members", icon: "♙", label: "Members" },
-  { key: "computers", icon: "▣", label: "Computers", badge: true },
+  { key: "agents", icon: "▣", label: "Agents", badge: true },
 ];
 
 const settingGroups: Array<{ title: string; items: Array<{ key: SettingKey; label: string }> }> = [
@@ -642,7 +642,7 @@ function ChatIcon() {
   );
 }
 
-function ComputerIcon() {
+function AgentIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path d="M3 4h18v13H3V4Z" />
@@ -666,6 +666,51 @@ function Switch({ defaultOn = false, label }: { defaultOn?: boolean; label: stri
   );
 }
 
+function AppNavigation({
+  active,
+  onChange,
+  className,
+}: {
+  active: NavKey;
+  onChange: (key: NavKey) => void;
+  className: string;
+}) {
+  return (
+    <nav className={className} aria-label="Workspace navigation">
+      {navItems
+        .filter((item) => !["activity", "tasks", "members"].includes(item.key))
+        .map((item) => (
+          <button
+            key={item.key}
+            className={`rail-button ${active === item.key ? "active" : ""}`}
+            onClick={() => onChange(item.key)}
+            aria-label={item.label}
+            aria-current={active === item.key ? "page" : undefined}
+          >
+            <span className="rail-icon">
+              {item.key === "chat"
+                ? <ChatIcon />
+                : item.key === "agents"
+                  ? <AgentIcon />
+                  : item.icon}
+            </span>
+            <span>{item.label}</span>
+            {item.badge && <i className="attention-dot" />}
+          </button>
+        ))}
+      <button
+        className={`rail-button rail-settings ${active === "settings" ? "active" : ""}`}
+        onClick={() => onChange("settings")}
+        aria-label="Settings"
+        aria-current={active === "settings" ? "page" : undefined}
+      >
+        <span className="rail-icon">⚙</span>
+        <span>Settings</span>
+      </button>
+    </nav>
+  );
+}
+
 function GlobalRail({
   active,
   onChange,
@@ -683,36 +728,7 @@ function GlobalRail({
           <span className="online-dot" />
         </button>
       </div>
-      <nav className="rail-nav">
-        {navItems
-          .filter((item) => !["activity", "tasks", "members"].includes(item.key))
-          .map((item) => (
-            <button
-              key={item.key}
-              className={`rail-button ${active === item.key ? "active" : ""}`}
-              onClick={() => onChange(item.key)}
-              aria-label={item.label}
-              aria-current={active === item.key ? "page" : undefined}
-            >
-              <span className="rail-icon">
-                {item.key === "chat"
-                  ? <ChatIcon />
-                  : item.key === "computers"
-                    ? <ComputerIcon />
-                    : item.icon}
-              </span>
-              {item.key !== "computers" && <span>{item.label}</span>}
-              {item.badge && <i className="attention-dot" />}
-            </button>
-          ))}
-      </nav>
-      <button
-        className={`rail-button rail-settings ${active === "settings" ? "active" : ""}`}
-        onClick={() => onChange("settings")}
-      >
-        <span className="rail-icon">⚙</span>
-        <span>Settings</span>
-      </button>
+      <AppNavigation active={active} onChange={onChange} className="rail-nav" />
     </aside>
   );
 }
@@ -743,6 +759,8 @@ function Section({
 function ConversationSidebar({
   current,
   onChannel,
+  activeNav,
+  onNavigate,
   mobileOpen,
   onClose,
   project,
@@ -751,6 +769,8 @@ function ConversationSidebar({
 }: {
   current: string;
   onChannel: (channel: string) => void;
+  activeNav: NavKey;
+  onNavigate: (nav: NavKey) => void;
   mobileOpen: boolean;
   onClose: () => void;
   project: HubProject | null;
@@ -766,6 +786,14 @@ function ConversationSidebar({
         </div>
         <button onClick={onClose} aria-label="Close sidebar">×</button>
       </div>
+      <AppNavigation
+        active={activeNav}
+        onChange={(nav) => {
+          onNavigate(nav);
+          onClose();
+        }}
+        className="mobile-drawer-nav"
+      />
       <button className="sidebar-search">
         <span>⌕</span>
         Jump to…
@@ -774,7 +802,10 @@ function ConversationSidebar({
       <div className="conversation-scroll">
         <Section title="Channels">
           <button
-            onClick={() => onChannel("all")}
+            onClick={() => {
+              onChannel("all");
+              onClose();
+            }}
             className={`conversation-item ${current === "all" ? "selected" : ""}`}
           >
             <span>#</span>
@@ -788,7 +819,10 @@ function ConversationSidebar({
               <button
                 className={`conversation-item ${current === agent.id ? "selected" : ""}`}
                 key={agent.id}
-                onClick={() => onChannel(agent.id)}
+                onClick={() => {
+                  onChannel(agent.id);
+                  onClose();
+                }}
               >
                 <PixelAvatar text={initials(agent.name)} color={agentColor(agent.id)} size="sm" />
                 {agent.name}
@@ -802,6 +836,38 @@ function ConversationSidebar({
         <div><strong>{identity?.displayName ?? "Edward"}</strong><span>{identity?.role === "admin" ? "Owner" : "Member"} · Online</span></div>
         <button>•••</button>
       </div>
+    </aside>
+  );
+}
+
+function MobileNavigationDrawer({
+  active,
+  mobileOpen,
+  onNavigate,
+  onClose,
+}: {
+  active: NavKey;
+  mobileOpen: boolean;
+  onNavigate: (nav: NavKey) => void;
+  onClose: () => void;
+}) {
+  return (
+    <aside className={`mobile-navigation-drawer ${mobileOpen ? "mobile-open" : ""}`}>
+      <div className="workspace-title">
+        <div>
+          <span className="eyebrow">Flock Works</span>
+          <strong>Menu</strong>
+        </div>
+        <button onClick={onClose} aria-label="Close navigation">×</button>
+      </div>
+      <AppNavigation
+        active={active}
+        onChange={(nav) => {
+          onNavigate(nav);
+          onClose();
+        }}
+        className="mobile-drawer-nav"
+      />
     </aside>
   );
 }
@@ -1620,9 +1686,9 @@ function UtilityPage({
     activity: { title: "Activity", copy: "Everything that needs your attention.", metric: "6 unread events", icon: "↗" },
     tasks: { title: "Tasks", copy: "Work assigned to you and your agents.", metric: "3 due today", icon: "✓" },
     members: { title: "Members", copy: "People and agents across Flock Works.", metric: "18 members · 4 agents", icon: "♙" },
-    computers: { title: "Computers", copy: "Machines connected to this server.", metric: "1 computer needs attention", icon: "▣" },
+    agents: { title: "Agents", copy: "Agents connected to this server.", metric: "1 agent needs attention", icon: "▣" },
   }[active];
-  if (active === "computers") {
+  if (active === "agents") {
     return (
       <main className="utility-page">
         <div className="utility-hero"><span>{data.icon}</span><div><p className="eyebrow">FLOCK WORKS</p><h1>{data.title}</h1><p>{data.copy}</p></div></div>
@@ -1852,11 +1918,11 @@ function UtilityPage({
         {!isAdmin && (
           <section className="utility-card enrollment-card">
             <StatusPill tone="neutral">MEMBER ACCESS</StatusPill>
-            <h2>Connected computers</h2>
+            <h2>Connected agents</h2>
             <p>An administrator can create the single-use token needed to enroll another agent.</p>
           </section>
         )}
-        <section className="computer-list">
+        <section className="agent-list">
           {agents.map((agent) => (
             <article key={agent.id}>
               <PixelAvatar text={initials(agent.name)} color={agentColor(agent.id)} />
@@ -2026,6 +2092,8 @@ export default function Workspace() {
         <ConversationSidebar
           current={channel}
           onChannel={setChannel}
+          activeNav={activeNav}
+          onNavigate={navigateNav}
           mobileOpen={sidebarOpen}
           onClose={() => setSidebarOpen(false)}
           project={hub.project}
@@ -2050,7 +2118,7 @@ export default function Workspace() {
         />
       </>
     );
-  }, [activeNav, channel, chatTab, setting, sidebarOpen, hub, navigateTo]);
+  }, [activeNav, channel, chatTab, setting, sidebarOpen, hub, navigateNav, navigateTo]);
 
   function showToast(message: string) {
     setToast(message);
@@ -2061,6 +2129,25 @@ export default function Workspace() {
     <div className="app-shell">
       <GlobalRail active={activeNav} onChange={navigateNav} onServer={() => setServerOpen(!serverOpen)} />
       {content}
+      {activeNav !== "chat" && (
+        <>
+          {!sidebarOpen && (
+            <button
+              className="mobile-app-menu-toggle"
+              onClick={() => setSidebarOpen(true)}
+              aria-label="Open navigation"
+            >
+              ☰
+            </button>
+          )}
+          <MobileNavigationDrawer
+            active={activeNav}
+            mobileOpen={sidebarOpen}
+            onNavigate={navigateNav}
+            onClose={() => setSidebarOpen(false)}
+          />
+        </>
+      )}
       {serverOpen && (
         <div className="server-switcher">
           <span className="eyebrow">YOUR SERVERS</span>

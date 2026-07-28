@@ -3,7 +3,7 @@ export type NavKey =
   | "activity"
   | "tasks"
   | "members"
-  | "computers"
+  | "agents"
   | "settings";
 
 export type ChatTab = "chat" | "tasks" | "files";
@@ -48,7 +48,7 @@ const utilityNavKeys = new Set<NavKey>([
   "activity",
   "tasks",
   "members",
-  "computers",
+  "agents",
 ]);
 
 const settingKeySet = new Set<SettingKey>(settingKeys);
@@ -93,6 +93,15 @@ export function parseWorkspacePath(pathname: string): ParsedWorkspaceRoute {
   }
 
   const [section, detail] = tabPath;
+  if (section === "computers" && tabPath.length === 1) {
+    return {
+      username,
+      view: { ...defaultWorkspaceView, nav: "agents" },
+      valid: true,
+      legacy: true,
+    };
+  }
+
   if (section === "chat" && tabPath.length <= 2) {
     const chatTab = detail ?? "chat";
     if (chatTab === "chat" || chatTab === "tasks" || chatTab === "files") {

@@ -79,6 +79,7 @@ button {
 }
 
 .rail-nav {
+  flex: 1;
   gap: 3px;
   margin-top: 8px;
 }
@@ -2549,7 +2550,7 @@ button {
   gap: 6px;
 }
 
-.computer-list h2 small {
+.agent-list h2 small {
   color: var(--pink);
   font-family: var(--font-geist-mono), monospace;
   font-size: 7px;
@@ -2567,14 +2568,14 @@ button {
   font-weight: 800;
 }
 
-.computer-list {
+.agent-list {
   display: grid;
   max-width: 820px;
   gap: 8px;
   margin: 22px 0 0 102px;
 }
 
-.computer-list article {
+.agent-list article {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -2583,20 +2584,20 @@ button {
   border: var(--line);
 }
 
-.computer-list article > div {
+.agent-list article > div {
   flex: 1;
 }
 
-.computer-list h2,
-.computer-list p {
+.agent-list h2,
+.agent-list p {
   margin: 0;
 }
 
-.computer-list h2 {
+.agent-list h2 {
   font-size: 13px;
 }
 
-.computer-list p {
+.agent-list p {
   margin-top: 3px;
   color: var(--muted);
   font-family: var(--font-geist-mono), monospace;
@@ -2604,6 +2605,12 @@ button {
 }
 
 .mobile-backdrop {
+  display: none;
+}
+
+.mobile-drawer-nav,
+.mobile-navigation-drawer,
+.mobile-app-menu-toggle {
   display: none;
 }
 
@@ -2652,73 +2659,99 @@ button {
 @media (max-width: 760px) {
   .app-shell {
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1fr) 66px;
+    grid-template-rows: minmax(0, 1fr);
   }
 
   .global-rail {
-    grid-row: 2;
-    flex-direction: row;
-    justify-content: space-around;
-    padding: 4px 6px;
-    border-top: var(--line);
-    border-right: 0;
-  }
-
-  .rail-top {
     display: none;
   }
 
-  .rail-nav {
-    flex: 1;
+  .mobile-drawer-nav {
+    display: grid;
+    gap: 5px;
+    padding: 12px;
+    border-bottom: var(--line);
+  }
+
+  .mobile-drawer-nav .rail-button {
+    width: 100%;
+    min-height: 44px;
     flex-direction: row;
-    justify-content: space-around;
-    gap: 0;
+    justify-content: flex-start;
+    gap: 12px;
+    padding: 6px 10px;
+    margin: 0;
+    font-size: 11px;
+    text-align: left;
+  }
+
+  .mobile-drawer-nav .rail-button > span:last-child:not(.rail-icon) {
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip: auto;
+  }
+
+  .mobile-drawer-nav .rail-icon {
+    width: 24px;
+    height: 24px;
+    font-size: 19px;
+  }
+
+  .mobile-drawer-nav .rail-settings {
     margin: 0;
   }
 
-  .rail-button {
-    width: 52px;
-    min-height: 52px;
-    font-size: 8px;
-  }
-
-  .rail-icon {
-    height: 21px;
-    font-size: 18px;
-  }
-
-  .rail-settings {
-    margin: 0;
-  }
-
-  .rail-nav .rail-button:nth-child(2),
-  .rail-nav .rail-button:nth-child(4) {
-    display: none;
-  }
-
-  .conversation-sidebar {
+  .conversation-sidebar,
+  .mobile-navigation-drawer {
     position: fixed;
     left: 0;
     top: 0;
-    bottom: 66px;
+    bottom: 0;
     z-index: 120;
-    width: min(310px, 86vw);
+    width: min(360px, 100vw);
+    background: #edf3f7;
+    border-right: var(--line);
     transform: translateX(-105%);
     transition: transform .2s ease;
   }
 
-  .conversation-sidebar.mobile-open {
+  .mobile-navigation-drawer {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .conversation-sidebar.mobile-open,
+  .mobile-navigation-drawer.mobile-open {
     transform: translateX(0);
     box-shadow: 8px 0 0 rgba(25,24,20,.25);
   }
 
-  .workspace-title button {
+  .workspace-title button,
+  .mobile-app-menu-toggle {
     display: grid;
+  }
+
+  .mobile-app-menu-toggle {
+    position: fixed;
+    right: 10px;
+    top: 10px;
+    z-index: 100;
+    width: 36px;
+    height: 36px;
+    place-items: center;
+    background: var(--paper-2);
+    border: var(--line);
+    box-shadow: 2px 2px 0 rgba(17, 34, 49, .18);
+    font-family: var(--font-geist-mono), monospace;
+    font-size: 16px;
+    font-weight: 900;
   }
 
   .mobile-backdrop {
     position: fixed;
-    inset: 0 0 66px;
+    inset: 0;
     z-index: 110;
     display: block;
     background: rgba(25,24,20,.38);
@@ -2934,19 +2967,11 @@ button {
   .server-switcher {
     left: 10px;
     top: auto;
-    bottom: 75px;
+    bottom: 10px;
   }
 }
 
 @media (max-width: 430px) {
-  .global-rail {
-    justify-content: space-between;
-  }
-
-  .rail-button {
-    width: 48px;
-  }
-
   .settings-shell {
     grid-template-columns: 102px minmax(0, 1fr);
   }
@@ -3351,7 +3376,7 @@ button {
 
 .settings-card,
 .utility-card,
-.computer-list article {
+.agent-list article {
   background: #eef5f8;
 }
 

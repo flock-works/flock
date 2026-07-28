@@ -25,7 +25,7 @@ test("builds and parses every canonical workspace view", () => {
     { ...defaultWorkspaceView, nav: "activity" },
     { ...defaultWorkspaceView, nav: "tasks" },
     { ...defaultWorkspaceView, nav: "members" },
-    { ...defaultWorkspaceView, nav: "computers" },
+    { ...defaultWorkspaceView, nav: "agents" },
     ...settingKeys.map(
       (setting): WorkspaceView => ({
         ...defaultWorkspaceView,
@@ -60,6 +60,13 @@ test("builds and parses every canonical workspace view", () => {
     }),
     "/edward/settings",
   );
+  assert.equal(
+    buildWorkspacePath("edward", {
+      ...defaultWorkspaceView,
+      nav: "agents",
+    }),
+    "/edward/agents",
+  );
 });
 
 test("canonicalizes legacy, mismatched, invalid, and restricted routes", () => {
@@ -73,6 +80,10 @@ test("canonicalizes legacy, mismatched, invalid, and restricted routes", () => {
   };
 
   assert.equal(canonicalWorkspacePath("/app", admin), "/edward/chat");
+  assert.equal(
+    canonicalWorkspacePath("/edward/computers", admin),
+    "/edward/agents",
+  );
   assert.equal(
     canonicalWorkspacePath("/someone-else/chat/files", admin),
     "/edward/chat/files",
