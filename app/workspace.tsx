@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { buildAgentInstallCommand } from "@/src/shared/install-command";
 import {
   adminOnlySettings,
   buildWorkspacePath,
@@ -1451,7 +1450,6 @@ function SettingsWorkspace({
 function UtilityPage({
   active,
   agents = [],
-  onCreateEnrollment,
   hostedAgentsEnabled = false,
   nousPortalEnabled = false,
   providers = [],
@@ -1465,7 +1463,6 @@ function UtilityPage({
 }: {
   active: Exclude<NavKey, "chat" | "settings">;
   agents?: HubAgent[];
-  onCreateEnrollment?: (name: string) => Promise<{ secret: string; expiresAt: string }>;
   hostedAgentsEnabled?: boolean;
   nousPortalEnabled?: boolean;
   providers?: LlmProvider[];
@@ -1495,9 +1492,6 @@ function UtilityPage({
   onDeleteHostedAgent?: (agentId: string) => Promise<void>;
   isAdmin?: boolean;
 }) {
-  const [agentName, setAgentName] = useState("");
-  const [enrollment, setEnrollment] = useState<{ secret: string; expiresAt: string } | null>(null);
-  const [enrollmentError, setEnrollmentError] = useState("");
   const [cloudName, setCloudName] = useState("");
   const [cloudConnectionId, setCloudConnectionId] = useState("");
   const [cloudModel, setCloudModel] = useState("");
@@ -1629,12 +1623,6 @@ function UtilityPage({
     computers: { title: "Computers", copy: "Machines connected to this server.", metric: "1 computer needs attention", icon: "▣" },
   }[active];
   if (active === "computers") {
-    const installCommand = enrollment
-      ? buildAgentInstallCommand(
-          typeof window === "undefined" ? "https://your-hub.example" : window.location.origin,
-          enrollment.secret,
-        )
-      : "";
     return (
       <main className="utility-page">
         <div className="utility-hero"><span>{data.icon}</span><div><p className="eyebrow">FLOCK WORKS</p><h1>{data.title}</h1><p>{data.copy}</p></div></div>
@@ -1861,35 +1849,7 @@ function UtilityPage({
             <p>Hosted agents are disabled. An administrator can enable the Docker runtime in hub configuration.</p>
           )}
         </section>
-        {isAdmin ? (
-          <section className="utility-card enrollment-card">
-            <StatusPill tone="yellow">ONE-LINE INSTALL</StatusPill>
-            <h2>Enroll a long-running Pi agent</h2>
-            <p>Create a single-use token, then run the generated command on macOS, Linux, or Windows.</p>
-            <div className="enrollment-form">
-              <input value={agentName} onChange={(event) => setAgentName(event.target.value)} placeholder="Agent name, e.g. shark" />
-              <button
-                className="black-button"
-                onClick={() => {
-                  setEnrollmentError("");
-                  void onCreateEnrollment?.(agentName.trim() || "agent")
-                    .then(setEnrollment)
-                    .catch((error: unknown) => setEnrollmentError(error instanceof Error ? error.message : "Could not create token"));
-                }}
-              >
-                Create token
-              </button>
-            </div>
-            {enrollment && (
-              <div className="install-command">
-                <code>{installCommand}</code>
-                <button onClick={() => void navigator.clipboard.writeText(installCommand)}>Copy</button>
-                <small>Expires {new Date(enrollment.expiresAt).toLocaleString()} · shown once</small>
-              </div>
-            )}
-            {enrollmentError && <p className="form-error">{enrollmentError}</p>}
-          </section>
-        ) : (
+        {!isAdmin && (
           <section className="utility-card enrollment-card">
             <StatusPill tone="neutral">MEMBER ACCESS</StatusPill>
             <h2>Connected computers</h2>
@@ -2048,7 +2008,6 @@ export default function Workspace() {
         <UtilityPage
           active={activeNav}
           agents={hub.agents}
-          onCreateEnrollment={hub.createEnrollment}
           hostedAgentsEnabled={hub.hostedAgentsEnabled}
           nousPortalEnabled={hub.nousPortalEnabled}
           providers={hub.llmProviders}
