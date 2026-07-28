@@ -25,14 +25,14 @@ async function render() {
   );
 }
 
-test("server-renders the Raft collaboration shell", async () => {
+test("server-renders the Flock Works collaboration shell", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>Raft — Work with your agents<\/title>/i);
-  assert.match(html, /Raft Works/);
+  assert.match(html, /<title>Flock Works — Work with your agents<\/title>/i);
+  assert.match(html, /Flock Works/);
   assert.match(html, /Company-wide coordination/);
   assert.match(html, /Work with your agents/i);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
