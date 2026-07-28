@@ -634,6 +634,24 @@ function StatusPill({ children, tone = "neutral" }: { children: React.ReactNode;
   return <span className={`status-pill ${tone}`}>{children}</span>;
 }
 
+function ChatIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 4h16v12H9l-5 4V4Z" />
+      <path d="M8 9h8M8 12h5" />
+    </svg>
+  );
+}
+
+function ComputerIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 4h18v13H3V4Z" />
+      <path d="M8 21h8M12 17v4" />
+    </svg>
+  );
+}
+
 function Switch({ defaultOn = false, label }: { defaultOn?: boolean; label: string }) {
   const [on, setOn] = useState(defaultOn);
   return (
@@ -652,12 +670,10 @@ function Switch({ defaultOn = false, label }: { defaultOn?: boolean; label: stri
 function GlobalRail({
   active,
   onChange,
-  onSearch,
   onServer,
 }: {
   active: NavKey;
   onChange: (key: NavKey) => void;
-  onSearch: () => void;
   onServer: () => void;
 }) {
   return (
@@ -667,24 +683,29 @@ function GlobalRail({
           <img src="/flock.png" alt="" />
           <span className="online-dot" />
         </button>
-        <button className="rail-button" aria-label="Search" onClick={onSearch}>
-          <span className="rail-icon">⌕</span>
-          <span>Search</span>
-        </button>
       </div>
       <nav className="rail-nav">
-        {navItems.map((item) => (
-          <button
-            key={item.key}
-            className={`rail-button ${active === item.key ? "active" : ""}`}
-            onClick={() => onChange(item.key)}
-            aria-current={active === item.key ? "page" : undefined}
-          >
-            <span className="rail-icon">{item.icon}</span>
-            <span>{item.label}</span>
-            {item.badge && <i className="attention-dot" />}
-          </button>
-        ))}
+        {navItems
+          .filter((item) => !["activity", "tasks", "members"].includes(item.key))
+          .map((item) => (
+            <button
+              key={item.key}
+              className={`rail-button ${active === item.key ? "active" : ""}`}
+              onClick={() => onChange(item.key)}
+              aria-label={item.label}
+              aria-current={active === item.key ? "page" : undefined}
+            >
+              <span className="rail-icon">
+                {item.key === "chat"
+                  ? <ChatIcon />
+                  : item.key === "computers"
+                    ? <ComputerIcon />
+                    : item.icon}
+              </span>
+              {item.key !== "computers" && <span>{item.label}</span>}
+              {item.badge && <i className="attention-dot" />}
+            </button>
+          ))}
       </nav>
       <button
         className={`rail-button rail-settings ${active === "settings" ? "active" : ""}`}
@@ -700,12 +721,10 @@ function GlobalRail({
 function Section({
   title,
   children,
-  action,
   openDefault = true,
 }: {
   title: string;
   children: React.ReactNode;
-  action?: string;
   openDefault?: boolean;
 }) {
   const [open, setOpen] = useState(openDefault);
@@ -716,7 +735,6 @@ function Section({
           <span className={`chevron ${open ? "open" : ""}`}>›</span>
           {title}
         </button>
-        {action && <button aria-label={`${action} ${title}`}>{action}</button>}
       </div>
       {open && <div className="section-items">{children}</div>}
     </section>
@@ -755,40 +773,29 @@ function ConversationSidebar({
         <kbd>⌘ K</kbd>
       </button>
       <div className="conversation-scroll">
-        <Section title="Saved items">
-          <button className="conversation-item"><span>✦</span> Later</button>
+        <Section title="Channels">
+          <button
+            onClick={() => onChannel("all")}
+            className={`conversation-item ${current === "all" ? "selected" : ""}`}
+          >
+            <span>#</span>
+            all
+          </button>
         </Section>
-        <Section title="Pinned conversations" action="+">
-          <button className="conversation-item"><span>▤</span> Hub launch checklist</button>
-          <button className="conversation-item"><span>▤</span> Agent protocol notes</button>
-        </Section>
-        <Section title="Joint Channels" action="+">
-          <button className="conversation-item"><span>⊞</span> partner-lab <em>6</em></button>
-        </Section>
-        <Section title="Channels" action="+">
-          {["all", "private-onboarding-owner"].map((channel) => (
-            <button
-              key={channel}
-              onClick={() => onChannel(channel)}
-              className={`conversation-item ${current === channel ? "selected" : ""}`}
-            >
-              <span>{channel.startsWith("private") ? "⌁" : "#"}</span>
-              {channel}
-              {channel === "all" && <em>3</em>}
-            </button>
-          ))}
-        </Section>
-        <Section title="Direct Messages" action="+">
-          {(agents.length ? agents : [
-            { id: "shark", name: "shark", status: "online", model: "", thinkingLevel: "" },
-            { id: "cindy", name: "Cindy", status: "busy", model: "", thinkingLevel: "" },
-          ]).map((agent) => (
-            <button className="conversation-item" key={agent.id}>
-              <PixelAvatar text={initials(agent.name)} color={agentColor(agent.id)} size="sm" />
-              {agent.name}
-              <i className={`presence ${agent.status === "offline" ? "" : agent.status === "busy" ? "busy" : "online"}`} />
-            </button>
-          ))}
+        <Section title="Direct Messages">
+          {agents
+            .filter((agent) => agent.status !== "revoked")
+            .map((agent) => (
+              <button
+                className={`conversation-item ${current === agent.id ? "selected" : ""}`}
+                key={agent.id}
+                onClick={() => onChannel(agent.id)}
+              >
+                <PixelAvatar text={initials(agent.name)} color={agentColor(agent.id)} size="sm" />
+                {agent.name}
+                <i className={`presence ${agent.status === "offline" ? "" : agent.status === "busy" ? "busy" : "online"}`} />
+              </button>
+            ))}
         </Section>
       </div>
       <div className="current-user">
@@ -907,24 +914,23 @@ function ThreadPane({ onClose }: { onClose: () => void }) {
 function Composer({
   onSend,
   agentName,
+  direct = false,
 }: {
   onSend: (text: string, asTask: boolean) => void;
   agentName: string;
+  direct?: boolean;
 }) {
   const [text, setText] = useState("");
-  const [asTask, setAsTask] = useState(false);
 
   function send() {
     if (!text.trim()) return;
-    onSend(text.trim(), asTask);
+    onSend(text.trim(), false);
     setText("");
-    setAsTask(false);
   }
 
   return (
     <div className="composer-wrap">
-      <div className={`composer ${asTask ? "task-mode" : ""}`}>
-        {asTask && <div className="task-banner"><StatusPill tone="pink">NEW TASK</StatusPill><span>This message will be added to the task board</span></div>}
+      <div className="composer">
         <textarea
           value={text}
           onChange={(event) => setText(event.target.value)}
@@ -934,28 +940,26 @@ function Composer({
               send();
             }
           }}
-          placeholder={`Message #all or @${agentName}`}
+          placeholder={direct ? `Message @${agentName}` : `Message #all or @${agentName}`}
           aria-label="Message"
         />
         <div className="composer-actions">
-          <div>
-            <button title="Attach file">＋</button>
-            <button title="Add media">▧</button>
-            <button title="Mention agent">@</button>
-          </div>
-          <div>
-            <button className={`as-task ${asTask ? "active" : ""}`} onClick={() => setAsTask(!asTask)}>✓ As Task</button>
+          <div className="composer-submit-actions">
             <button className="send-button" onClick={send}>Send <span>↵</span></button>
           </div>
         </div>
       </div>
-      <p className="composer-hint"><span className="pulse-dot" /> shark and Cindy can see this channel · Shift + Enter for a new line</p>
+      <p className="composer-hint">
+        <span className="pulse-dot" />
+        {direct ? `Private conversation with ${agentName}` : "Enrolled agents can see this channel"} · Shift + Enter for a new line
+      </p>
     </div>
   );
 }
 
 function ChannelWorkspace({
   onOpenSidebar,
+  channel,
   tab,
   onTab,
   messages: hubMessages,
@@ -966,6 +970,7 @@ function ChannelWorkspace({
   onSelectBranch,
 }: {
   onOpenSidebar: () => void;
+  channel: string;
   tab: ChatTab;
   onTab: (tab: ChatTab) => void;
   messages: UiMessage[];
@@ -976,16 +981,18 @@ function ChannelWorkspace({
   onSelectBranch: (dispatchId: string, leafId: string) => Promise<void>;
 }) {
   const [localMessages, setLocalMessages] = useState<UiMessage[]>([]);
-  const [muted, setMuted] = useState(false);
-  const [agentMenu, setAgentMenu] = useState(false);
   const [targets, setTargets] = useState<string[]>([]);
-  const [threadOpen, setThreadOpen] = useState(true);
+  const [threadOpen, setThreadOpen] = useState(false);
+  const directAgent = channel === "all"
+    ? undefined
+    : agents.find((agent) => agent.id === channel && agent.status !== "revoked");
 
   useEffect(() => {
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
       setTargets((current) => {
+        if (directAgent) return [directAgent.id];
         const valid = current.filter((id) => agents.some((agent) => agent.id === id));
         return valid.length > 0 ? valid : agents.filter((agent) => agent.status !== "revoked").map((agent) => agent.id);
       });
@@ -993,7 +1000,7 @@ function ChannelWorkspace({
     return () => {
       cancelled = true;
     };
-  }, [agents]);
+  }, [agents, directAgent]);
 
   function send(text: string, asTask: boolean) {
     if (asTask) {
@@ -1043,44 +1050,14 @@ function ChannelWorkspace({
       <header className="channel-header">
         <button className="mobile-sidebar-toggle" onClick={onOpenSidebar}>☰</button>
         <div className="channel-identity">
-          <div><h1><span>#</span> all</h1><StatusPill tone={connection === "live" ? "green" : "pink"}>{connection.toUpperCase()}</StatusPill></div>
-          <p>Company-wide coordination, agent updates, and launch decisions.</p>
+          <div><h1><span>{directAgent ? "@" : "#"}</span> {directAgent?.name ?? "all"}</h1><StatusPill tone={connection === "live" ? "green" : "pink"}>{connection.toUpperCase()}</StatusPill></div>
+          <p>{directAgent ? `One-on-one conversation with ${directAgent.name}.` : "Company-wide coordination, agent updates, and launch decisions."}</p>
         </div>
-        <div className="channel-actions">
-          <button title="Search channel">⌕</button>
-          <button className={muted ? "pink-active" : ""} title="Mute channel" onClick={() => setMuted(!muted)}>{muted ? "◉" : "◌"}</button>
-          <button className={agentMenu ? "pink-active" : ""} title="Agents" onClick={() => setAgentMenu(!agentMenu)}>⌘</button>
-          <button title="Channel settings">•••</button>
-          <button className="member-count"><span className="mini-stack"><i>YOU</i><i>AI</i></span>{agents.length + 1}</button>
-        </div>
-        {agentMenu && (
-          <div className="agent-popover">
-            <span className="eyebrow">DISPATCH TO</span>
-            {agents.map((agent) => (
-              <button
-                type="button"
-                className="agent-target"
-                key={agent.id}
-                onClick={() => setTargets((current) =>
-                  current.includes(agent.id)
-                    ? current.filter((id) => id !== agent.id)
-                    : [...current, agent.id],
-                )}
-              >
-                <PixelAvatar text={initials(agent.name)} color={agentColor(agent.id)} size="sm" />
-                <p><strong>{agent.name}</strong><small>{agent.model} · {agent.status}</small></p>
-                <b>{targets.includes(agent.id) ? "✓" : "○"}</b>
-              </button>
-            ))}
-            {agents.length === 0 && <p className="agent-empty">Enroll an agent to dispatch work.</p>}
-          </div>
-        )}
       </header>
       <nav className="content-tabs" aria-label="Channel content">
-        {(["chat", "tasks", "files"] as ChatTab[]).map((key) => (
+        {(["chat"] as ChatTab[]).map((key) => (
           <button key={key} className={tab === key ? "active" : ""} onClick={() => onTab(key)}>
             {key[0].toUpperCase() + key.slice(1)}
-            {key === "tasks" && <em>3</em>}
           </button>
         ))}
       </nav>
@@ -1089,7 +1066,7 @@ function ChannelWorkspace({
           <div className="message-feed">
             <div className="message-start">Beginning of messages</div>
             <div className="date-separator"><span>MONDAY, JULY 27</span></div>
-            <div className="system-event"><span>✦</span><p><strong>Cindy joined #all</strong> via the owner onboarding flow.</p><time>9:32 AM</time></div>
+            {!directAgent && <div className="system-event"><span>✦</span><p><strong>Cindy joined #all</strong> via the owner onboarding flow.</p><time>9:32 AM</time></div>}
             {[...hubMessages, ...localMessages].map((message) => <Message key={message.id} message={message} onOpenThread={() => setThreadOpen(true)} />)}
             {dispatches.filter((dispatch) => dispatch.status === "awaiting_selection").map((dispatch) => (
               <article className="branch-selector" key={dispatch.id}>
@@ -1111,7 +1088,7 @@ function ChannelWorkspace({
               <div className="agent-typing"><PixelAvatar text="AI" color="blue" size="sm" /><span><i /><i /><i /></span><p>An agent is working</p></div>
             )}
           </div>
-          <Composer onSend={send} agentName="shark" />
+          <Composer onSend={send} agentName={directAgent?.name ?? "shark"} direct={Boolean(directAgent)} />
         </>
       )}
       {tab === "tasks" && (
@@ -1442,18 +1419,20 @@ function SettingsWorkspace({
       <aside className="settings-menu">
         <div className="settings-menu-header"><span className="eyebrow">FLOCK WORKS</span><h1>Settings</h1></div>
         <div className="settings-menu-scroll">
-          {settingGroups.map((group) => (
-            <section key={group.title}>
-              <h2>{group.title}</h2>
-              {group.items
-                .filter((item) => identity?.role === "admin" || !adminOnlySettings.has(item.key))
-                .map((item) => (
-                  <button key={item.key} className={setting === item.key ? "active" : ""} onClick={() => onSetting(item.key)}>
-                    <span>{item.label}</span>{setting === item.key && <b>→</b>}
-                  </button>
-                ))}
-            </section>
-          ))}
+          {settingGroups
+            .filter((group) => group.items.some((item) => item.key === "about"))
+            .map((group) => (
+              <section key={group.title}>
+                <h2>{group.title}</h2>
+                {group.items
+                  .filter((item) => item.key === "about")
+                  .map((item) => (
+                    <button key={item.key} className={setting === item.key ? "active" : ""} onClick={() => onSetting(item.key)}>
+                      <span>{item.label}</span>{setting === item.key && <b>→</b>}
+                    </button>
+                  ))}
+              </section>
+            ))}
         </div>
         <div className="owner-view">
           <PixelAvatar text={initials(identity?.displayName ?? "Member")} color="yellow" size="sm" />
@@ -2024,7 +2003,6 @@ export default function Workspace() {
       ? "account"
       : routeView.setting;
   const [channel, setChannel] = useState("all");
-  const [searchOpen, setSearchOpen] = useState(false);
   const [serverOpen, setServerOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [toast, setToast] = useState("");
@@ -2043,7 +2021,11 @@ export default function Workspace() {
   }, [hub.identity, parsedRoute.username, router]);
 
   const navigateNav = useCallback((nav: NavKey) => {
-    navigateTo({ ...defaultWorkspaceView, nav });
+    navigateTo({
+      ...defaultWorkspaceView,
+      nav,
+      setting: nav === "settings" ? "about" : defaultWorkspaceView.setting,
+    });
   }, [navigateTo]);
 
   const content = useMemo(() => {
@@ -2094,6 +2076,7 @@ export default function Workspace() {
         />
         <ChannelWorkspace
           onOpenSidebar={() => setSidebarOpen(true)}
+          channel={channel}
           tab={chatTab}
           onTab={(nextTab) => navigateTo({
             ...defaultWorkspaceView,
@@ -2118,7 +2101,7 @@ export default function Workspace() {
 
   return (
     <div className="app-shell">
-      <GlobalRail active={activeNav} onChange={navigateNav} onSearch={() => setSearchOpen(true)} onServer={() => setServerOpen(!serverOpen)} />
+      <GlobalRail active={activeNav} onChange={navigateNav} onServer={() => setServerOpen(!serverOpen)} />
       {content}
       {serverOpen && (
         <div className="server-switcher">
@@ -2139,15 +2122,6 @@ export default function Workspace() {
           ))}
           {hub.projects.length === 0 && <button className="active"><span className="server-mark mini"><img src="/flock.png" alt="" /></span><div><strong>Flock Works</strong><small>Connecting…</small></div></button>}
           {hub.identity?.role === "admin" && <button className="add-server">＋ Create or join server</button>}
-        </div>
-      )}
-      {searchOpen && (
-        <div className="search-overlay" role="dialog" aria-modal="true" aria-label="Search">
-          <button className="overlay-dismiss" onClick={() => setSearchOpen(false)} aria-label="Close search" />
-          <div className="search-palette">
-            <div className="search-input"><span>⌕</span><input autoFocus placeholder="Search messages, tasks, people, and files…" /><kbd>ESC</kbd></div>
-            <div className="search-results"><span className="eyebrow">RECENT</span><button><b># all</b><span>Channel</span></button><button><b>shark</b><span>Agent</span></button><button><b>Hub launch checklist</b><span>Pinned</span></button></div>
-          </div>
         </div>
       )}
       {sidebarOpen && <button className="mobile-backdrop" onClick={() => setSidebarOpen(false)} aria-label="Close sidebar" />}

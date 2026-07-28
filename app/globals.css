@@ -163,8 +163,22 @@ button {
   line-height: 1;
 }
 
+.rail-icon svg {
+  width: 21px;
+  height: 21px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+  stroke-width: 2;
+}
+
 .rail-settings {
   margin-top: auto;
+}
+
+.rail-settings .rail-icon {
+  font-size: 25px;
 }
 
 .attention-dot {
@@ -275,7 +289,7 @@ button {
   background: transparent;
   border: 0;
   font-family: var(--font-geist-mono), monospace;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 800;
   letter-spacing: .08em;
   text-transform: uppercase;
@@ -285,10 +299,6 @@ button {
   display: flex;
   align-items: center;
   gap: 5px;
-}
-
-.section-heading > button:last-child {
-  font-size: 15px;
 }
 
 .chevron {
@@ -1079,6 +1089,10 @@ button {
 .composer-actions > div {
   display: flex;
   gap: 4px;
+}
+
+.composer-actions .composer-submit-actions {
+  margin-left: auto;
 }
 
 .composer-actions button {
