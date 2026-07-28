@@ -255,6 +255,25 @@ export class HubServer {
         { "Set-Cookie": authenticator.expiredSessionCookie(url.protocol === "https:") },
       );
     }
+    if (url.pathname === "/api/v1/agents/onboarding" && request.method === "POST") {
+      this.enforceRateLimit(request, "agent-onboarding", 20, 60_000);
+      const body = await readJson(request);
+      const enrollment = runtime.database.inspectEnrollment(
+        requireString(body.enrollmentToken, "enrollmentToken"),
+      );
+      return sendJson(response, 200, {
+        enrollment: {
+          name: enrollment.nameHint,
+          expiresAt: enrollment.expiresAt,
+        },
+        nous: {
+          enabled: Boolean(this.config.nous.clientId),
+          ...(this.config.nous.clientId ? { clientId: this.config.nous.clientId } : {}),
+          portalUrl: this.config.nous.portalUrl.href,
+          inferenceUrl: this.config.nous.inferenceUrl.href,
+        },
+      });
+    }
     if (url.pathname === "/api/v1/agents/enroll" && request.method === "POST") {
       this.enforceRateLimit(request, "enroll", 10, 60_000);
       const body = await readJson(request);

@@ -40,6 +40,7 @@ function testConfig(dataRoot: string): HubConfig {
     leaseMs: 10_000,
     leaderLock: false,
     nous: {
+      clientId: "flock-test",
       portalUrl: new URL("https://portal.nousresearch.com"),
       inferenceUrl: new URL("https://inference-api.nousresearch.com/v1"),
     },
@@ -149,6 +150,27 @@ test("hub completes an authenticated agent job and selects its only branch", asy
     body: JSON.stringify({ name: "shark" }),
   });
   assert.equal(enrollmentResponse.status, 201);
+
+  const onboardingResponse = await jsonRequest<{
+    enrollment: { name: string; expiresAt: string };
+    nous: {
+      enabled: boolean;
+      clientId: string;
+      portalUrl: string;
+      inferenceUrl: string;
+    };
+  }>(baseUrl, "/api/v1/agents/onboarding", {
+    method: "POST",
+    body: JSON.stringify({ enrollmentToken: enrollmentResponse.body.enrollment.secret }),
+  });
+  assert.equal(onboardingResponse.status, 200);
+  assert.equal(onboardingResponse.body.enrollment.name, "shark");
+  assert.deepEqual(onboardingResponse.body.nous, {
+    enabled: true,
+    clientId: "flock-test",
+    portalUrl: "https://portal.nousresearch.com/",
+    inferenceUrl: "https://inference-api.nousresearch.com/v1",
+  });
 
   const agentResponse = await jsonRequest<{
     agent: { id: string };

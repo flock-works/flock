@@ -108,6 +108,15 @@ Run the generated one-line command on the computer that should host the agent:
 npx --yes @flock-works/flock@latest agent install --hub "https://flock.example.com" --enrollment "enr_…" --workspace "."
 ```
 
+When the hub has `FLOCK_NOUS_CLIENT_ID` configured and `--model` is omitted,
+`agent install` starts an interactive Nous Portal setup. It displays the
+device-authorization URL and code, waits for approval, loads the models
+available to that Nous account, and asks the user to choose one. The renewable
+Nous credential is stored only in the protected local Pi credential file.
+Pass `--model provider/model-id` to use a specific provider without the
+interactive flow, or `--no-onboard` to keep automatic local credential
+detection.
+
 This exchanges the one-time token, writes the agent credential with owner-only
 permissions, and installs a persistent user service. The same command works in
 macOS and Linux shells, Windows Command Prompt, and PowerShell:
@@ -116,10 +125,13 @@ macOS and Linux shells, Windows Command Prompt, and PowerShell:
 - Linux: systemd user service
 - Windows: Task Scheduler login task
 
-The default model is `anthropic/claude-sonnet-4-6`. Provider credentials stay on
-the agent machine and are resolved by `pi-ai`, for example
-`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or the provider’s supported ambient
-credentials. Flock also reuses the protected credentials in
+When `--model` is omitted, Flock selects a model for a configured provider. An
+Anthropic credential keeps `anthropic/claude-sonnet-4-6` as the default; otherwise
+an existing OpenAI Codex login selects `openai-codex/gpt-5.4`. If no credential is
+detectable during installation, Flock falls back to the Anthropic default.
+Provider credentials stay on the agent machine and are resolved by `pi-ai`, for
+example `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or the provider’s supported
+ambient credentials. Flock also reuses the protected credentials in
 `~/.pi/agent/auth.json`, including an existing OpenAI Codex login. Override the
 model with `--model provider/model-id`.
 For a background service, put provider keys in an owner-only file such as

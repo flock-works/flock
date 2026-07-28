@@ -613,22 +613,29 @@ export class ControlDatabase {
     return { id, secret: `${id}.${secret}`, expiresAt };
   }
 
+  inspectEnrollment(enrollmentSecret: string): {
+    id: string;
+    projectId: string;
+    nameHint: string;
+    expiresAt: string;
+  } {
+    const row = this.requireEnrollment(enrollmentSecret);
+    return {
+      id: string(row, "id"),
+      projectId: string(row, "project_id"),
+      nameHint: string(row, "name_hint"),
+      expiresAt: string(row, "expires_at"),
+    };
+  }
+
   enrollAgent(input: {
     enrollmentSecret: string;
     name?: string;
     capabilities: AgentCapabilities;
   }): { agent: AgentRecord; token: string } {
-    const [id, secret] = input.enrollmentSecret.split(".", 2);
-    if (!id || !secret) throw new FlockError("invalid_enrollment", "Invalid enrollment token", 401);
     return this.transaction(() => {
-      const row = this.database.prepare("SELECT * FROM enrollment_tokens WHERE id = ?").get(id) as Row | undefined;
-      if (!row || !secretsEqual(secret, string(row, "token_hash"))) {
-        throw new FlockError("invalid_enrollment", "Invalid enrollment token", 401);
-      }
-      if (nullableString(row, "used_at")) throw new FlockError("enrollment_used", "Enrollment token has already been used", 409);
-      if (Date.parse(string(row, "expires_at")) <= Date.now()) {
-        throw new FlockError("enrollment_expired", "Enrollment token has expired", 401);
-      }
+      const row = this.requireEnrollment(input.enrollmentSecret);
+      const id = string(row, "id");
       const token = createSecret();
       const now = new Date().toISOString();
       const agentId = createId("agt");
@@ -659,6 +666,22 @@ export class ControlDatabase {
       if (!agent) throw new FlockError("database_corrupt", "Enrolled agent was not persisted", 500);
       return { agent, token: `${agentId}.${token}` };
     });
+  }
+
+  private requireEnrollment(enrollmentSecret: string): Row {
+    const [id, secret] = enrollmentSecret.split(".", 2);
+    if (!id || !secret) throw new FlockError("invalid_enrollment", "Invalid enrollment token", 401);
+    const row = this.database.prepare("SELECT * FROM enrollment_tokens WHERE id = ?").get(id) as Row | undefined;
+    if (!row || !secretsEqual(secret, string(row, "token_hash"))) {
+      throw new FlockError("invalid_enrollment", "Invalid enrollment token", 401);
+    }
+    if (nullableString(row, "used_at")) {
+      throw new FlockError("enrollment_used", "Enrollment token has already been used", 409);
+    }
+    if (Date.parse(string(row, "expires_at")) <= Date.now()) {
+      throw new FlockError("enrollment_expired", "Enrollment token has expired", 401);
+    }
+    return row;
   }
 
   createHostedAgent(input: {

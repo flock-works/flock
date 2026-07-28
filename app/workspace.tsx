@@ -850,7 +850,7 @@ function Message({
         {message.detail && <div className="agent-detail"><span className="pulse-dot" />{message.detail}</div>}
         {message.thread && <button className="thread-preview" onClick={onOpenThread}><span className="thread-lines">↳</span>{message.thread}<b>→</b></button>}
         {message.reactions && (
-          <div className="reactions">{message.reactions.map((reaction) => <button key={reaction}>{reaction}</button>)}<button>＋</button></div>
+          <div className="reactions">{message.reactions.map((reaction) => <button key={reaction}>{reaction}</button>)}</div>
         )}
       </div>
     </article>
@@ -1537,7 +1537,7 @@ function UtilityPage({
   });
   const visibleNousModel = filteredNousModels.some((model) => model.id === nousModel)
     ? nousModel
-    : "";
+    : filteredNousModels[0]?.id ?? "";
 
   async function beginNousFlow(
     editingAgent: HubAgent | null = null,
@@ -1562,7 +1562,6 @@ function UtilityPage({
         const controller = new AbortController();
         setNousAbort(controller);
         const portalWindow = window.open("about:blank", "flock-nous-portal");
-        if (portalWindow) portalWindow.opener = null;
         connection = await onConnectProvider("nous", {
           signal: controller.signal,
           portalWindow,
@@ -1591,7 +1590,7 @@ function UtilityPage({
   }
 
   async function submitNousAgent() {
-    if (!nousConnectionId || !nousModel) return;
+    if (!nousConnectionId || !visibleNousModel) return;
     if (!nousEditingAgent && !nousName.trim()) {
       setNousError("Enter an agent name.");
       return;
@@ -1602,14 +1601,14 @@ function UtilityPage({
       if (nousEditingAgent) {
         await onUpdateHostedAgent?.(nousEditingAgent.id, {
           connectionId: nousConnectionId,
-          model: `nous/${nousModel}`,
+          model: `nous/${visibleNousModel}`,
           thinkingLevel: "medium",
         });
       } else {
         await onCreateHostedAgent?.({
           name: nousName.trim(),
           connectionId: nousConnectionId,
-          model: `nous/${nousModel}`,
+          model: `nous/${visibleNousModel}`,
           thinkingLevel: "medium",
         });
       }

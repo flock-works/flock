@@ -13,7 +13,9 @@ import {
   saveAgentConfig,
   type AgentConfig,
 } from "./agent/config.ts";
+import { onboardNousModel } from "./agent/nous-onboarding.ts";
 import { PiAgentRunner } from "./agent/runner.ts";
+import { resolveAgentModel } from "./agent/model-selection.ts";
 import {
   agentServiceStatus,
   installAgentService,
@@ -100,7 +102,7 @@ agent
   .requiredOption("--enrollment <token>", "one-time enrollment token")
   .requiredOption("--workspace <path>", "local agent workspace")
   .option("--name <name>", "agent display name")
-  .option("--model <provider/model>", "Pi model", "anthropic/claude-sonnet-4-6")
+  .option("--model <provider/model>", "Pi model (auto-detected when omitted)")
   .option("--thinking <level>", "thinking level", "medium")
   .option("--data <path>", "agent data directory", defaultAgentDataRoot())
   .option("--env-file <path>", "protected provider credential environment file")
@@ -138,14 +140,15 @@ agent
   .requiredOption("--enrollment <token>", "one-time enrollment token")
   .requiredOption("--workspace <path>", "local agent workspace")
   .option("--name <name>", "agent display name")
-  .option("--model <provider/model>", "Pi model", "anthropic/claude-sonnet-4-6")
+  .option("--model <provider/model>", "Pi model (auto-detected when omitted)")
   .option("--thinking <level>", "thinking level", "medium")
   .option("--data <path>", "agent data directory", defaultAgentDataRoot())
   .option("--env-file <path>", "protected provider credential environment file")
   .option("--config <path>", "agent config file")
+  .option("--no-onboard", "skip interactive Nous Portal onboarding")
   .option("--no-start", "install without starting the service")
   .action(async (options) => {
-    const config = await enrollAgent(options);
+    const config = await enrollAgent(options, { interactiveOnboarding: options.onboard });
     const configPath = resolve(options.config ?? defaultAgentConfigPath(config.dataRoot));
     await saveAgentConfig(config, configPath);
     const definition = await installAgentService({ configPath, start: options.start });
@@ -175,16 +178,28 @@ type EnrollmentOptions = {
   enrollment: string;
   workspace: string;
   name?: string;
-  model: string;
+  model?: string;
   thinking: string;
   data: string;
   envFile?: string;
 };
 
-async function enrollAgent(options: EnrollmentOptions): Promise<AgentConfig> {
+async function enrollAgent(
+  options: EnrollmentOptions,
+  behavior: { interactiveOnboarding?: boolean } = {},
+): Promise<AgentConfig> {
   const hubUrl = new URL(options.hub);
   const workspace = resolve(options.workspace);
   const dataRoot = resolve(options.data);
+  const envFile = options.envFile ? resolve(options.envFile) : undefined;
+  await loadAgentEnvironment(envFile);
+  const onboardedModel = !options.model && behavior.interactiveOnboarding
+    ? await onboardNousModel({
+        hubUrl,
+        enrollmentToken: options.enrollment,
+      })
+    : undefined;
+  const model = onboardedModel ?? await resolveAgentModel(options.model);
   const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
   if (!thinkingLevels.includes(options.thinking as (typeof thinkingLevels)[number])) {
     throw new FlockError("invalid_thinking_level", `Thinking level must be one of ${thinkingLevels.join(", ")}`);
@@ -199,7 +214,7 @@ async function enrollAgent(options: EnrollmentOptions): Promise<AgentConfig> {
         tools: ["read", "write", "edit", "bash"],
         platform: `${process.platform}-${process.arch}`,
         workspace,
-        model: options.model,
+        model,
         thinkingLevel: options.thinking,
       },
     }),
@@ -219,10 +234,10 @@ async function enrollAgent(options: EnrollmentOptions): Promise<AgentConfig> {
     token: body.token,
     name: body.agent.name,
     workspace,
-    model: options.model,
+    model,
     thinkingLevel: options.thinking as AgentConfig["thinkingLevel"],
     dataRoot,
-    envFile: options.envFile ? resolve(options.envFile) : undefined,
+    envFile,
   };
 }
 

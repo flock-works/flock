@@ -22,6 +22,12 @@ test("enrolls and authenticates a one-time project agent", async () => {
   const db = await makeDatabase();
   const project = db.createProject({ name: "Demo", slug: "demo", sessionId: "session-1" });
   const enrollment = db.createEnrollment({ projectId: project.id, nameHint: "shark", createdBy: "owner" });
+  assert.deepEqual(db.inspectEnrollment(enrollment.secret), {
+    id: enrollment.id,
+    projectId: project.id,
+    nameHint: "shark",
+    expiresAt: enrollment.expiresAt,
+  });
   const enrolled = db.enrollAgent({ enrollmentSecret: enrollment.secret, capabilities });
 
   assert.equal(enrolled.agent.projectId, project.id);
@@ -32,6 +38,7 @@ test("enrolls and authenticates a one-time project agent", async () => {
     async () => db.enrollAgent({ enrollmentSecret: enrollment.secret, capabilities }),
     /already been used/,
   );
+  assert.throws(() => db.inspectEnrollment(enrollment.secret), /already been used/);
   db.close();
 });
 
