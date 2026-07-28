@@ -1,5 +1,5 @@
 import Workspace from "@/app/workspace";
 
-export default function AppPage() {
+export default function UsernameWorkspacePage() {
   return <Workspace />;
 }

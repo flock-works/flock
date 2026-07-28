@@ -48,6 +48,21 @@ test("server-renders the collaboration workspace at app", async () => {
   assert.match(html, /Flock Works/i);
 });
 
+test("server-renders username-scoped global and nested tab routes", async () => {
+  const routes = [
+    ["/test-user/activity", /Everything that needs your attention/i],
+    ["/test-user/chat/tasks", /Work in motion/i],
+    ["/test-user/settings/notifications", /Push notifications are active/i],
+  ];
+
+  for (const [path, expected] of routes) {
+    const response = await render(path);
+    assert.equal(response.status, 200, path);
+    const html = await response.text();
+    assert.match(html, expected, path);
+  }
+});
+
 test("removes the disposable starter preview", async () => {
   await assert.rejects(access(new URL("app/_sites-preview", templateRoot)));
 });
