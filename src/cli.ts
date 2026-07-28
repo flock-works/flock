@@ -42,8 +42,8 @@ hub
   .option("--trust-proxy", "trust a TLS-terminating reverse proxy", false)
   .option("--no-leader-lock", "disable the shared-directory leader lock")
   .option("--dev-auth", "use a local test identity; only valid on loopback")
-  .option("--project-name <name>", "create an initial project on first start", "Raft Works")
-  .option("--project-slug <slug>", "initial project slug", "raft-works")
+  .option("--project-name <name>", "create an initial project on first start", "Flock Works")
+  .option("--project-slug <slug>", "initial project slug", "flock-works")
   .action(async (options) => {
     const publicUrl = options.publicUrl ?? inferredPublicUrl(options.listen);
     const config = options.devAuth

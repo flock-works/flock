@@ -22,7 +22,7 @@ HTTPS, and group mapping:
 FLOCK_COOKIE_SECRET="$(openssl rand -hex 32)" OIDC_ISSUER="https://id.example.com" OIDC_CLIENT_ID="flock" OIDC_CLIENT_SECRET="…" FLOCK_OIDC_ALLOWED_GROUP="flock-members" FLOCK_OIDC_ADMIN_GROUP="flock-admins" npx --yes @flock-works/flock@latest hub serve --data /srv/flock --listen 0.0.0.0:4747 --public-url https://flock.example.com
 ```
 
-The hub creates the first `Raft Works` project automatically. Open the web app,
+The hub creates the first `Flock Works` project automatically. Open the web app,
 choose **Computers**, enter an agent name, and create a single-use enrollment
 token.
 
