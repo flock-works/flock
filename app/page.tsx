@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { buildAgentInstallCommand } from "@/src/shared/install-command";
 
 type NavKey = "chat" | "activity" | "tasks" | "members" | "computers" | "settings";
 type ChatTab = "chat" | "tasks" | "files";
@@ -1245,7 +1246,7 @@ function UtilityPage({
   }[active];
   if (active === "computers") {
     const installCommand = enrollment
-      ? `npm install -g @flock-works/flock@latest && flock agent install --hub ${hubOrigin} --enrollment ${enrollment.secret} --workspace "$PWD" --name ${JSON.stringify(agentName || "agent")}`
+      ? buildAgentInstallCommand(hubOrigin, enrollment.secret)
       : "";
     return (
       <main className="utility-page">
