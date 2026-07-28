@@ -35,11 +35,12 @@ nodes report `503` from `/readyz` until they acquire leadership.
 Run the generated one-line command on the computer that should host the agent:
 
 ```bash
-npm install -g @flock-works/flock@latest && flock agent install --hub https://flock.example.com --enrollment 'enr_…' --workspace "$PWD" --name shark
+npx --yes @flock-works/flock@latest agent install --hub "https://flock.example.com" --enrollment "enr_…" --workspace "."
 ```
 
 This exchanges the one-time token, writes the agent credential with owner-only
-permissions, and installs a persistent user service:
+permissions, and installs a persistent user service. The same command works in
+macOS and Linux shells, Windows Command Prompt, and PowerShell:
 
 - macOS: LaunchAgent
 - Linux: systemd user service
@@ -57,10 +58,10 @@ that file inside the service process without sending its contents to the hub.
 Useful lifecycle commands:
 
 ```bash
-flock agent status
-flock agent stop
-flock agent start
-flock agent uninstall
+npx --yes @flock-works/flock@latest agent status
+npx --yes @flock-works/flock@latest agent stop
+npx --yes @flock-works/flock@latest agent start
+npx --yes @flock-works/flock@latest agent uninstall
 ```
 
 `uninstall` removes only the service. It keeps the protected agent identity and
