@@ -87,6 +87,7 @@ type HubEntry = {
       provider?: string;
       model?: string;
       stopReason?: string;
+      errorMessage?: string;
     };
     customType?: string;
     data?: Record<string, unknown>;
@@ -322,7 +323,7 @@ function useHubState() {
         timestamp: Date.parse(entry.timestamp),
         avatar: initials(agent?.name ?? "Agent"),
         color: agentColor(agent?.id ?? entry.id),
-        text: text || "The model run ended with an error.",
+        text: text || entry.message.errorMessage || "The model run ended with an error.",
         detail: `${entry.message.model ?? "model"} · ${entry.message.stopReason ?? "complete"}`,
         reactions: [],
       }];

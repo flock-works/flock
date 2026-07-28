@@ -42,3 +42,6 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+flock-data/
+reverse-engineered/
+TOP_LEVEL_DEPENDENCIES.txt

@@ -49,7 +49,9 @@ macOS and Linux shells, Windows Command Prompt, and PowerShell:
 The default model is `anthropic/claude-sonnet-4-6`. Provider credentials stay on
 the agent machine and are resolved by `pi-ai`, for example
 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or the provider’s supported ambient
-credentials. Override the model with `--model provider/model-id`.
+credentials. Flock also reuses the protected credentials in
+`~/.pi/agent/auth.json`, including an existing OpenAI Codex login. Override the
+model with `--model provider/model-id`.
 For a background service, put provider keys in an owner-only file such as
 `~/.config/flock/provider.env` (`chmod 600`) and add
 `--env-file ~/.config/flock/provider.env` to the install command. Flock loads

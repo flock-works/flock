@@ -22,6 +22,7 @@ import { FlockError, toError } from "../shared/errors.ts";
 import type { AgentConfig } from "./config.ts";
 import type { ActiveLease, JobResult } from "./client.ts";
 import { LeasedSessionStorage } from "./leased-session.ts";
+import { PiCredentialStore } from "./pi-credentials.ts";
 import type { SessionMirror } from "./session-mirror.ts";
 
 export class PiAgentRunner {
@@ -29,7 +30,11 @@ export class PiAgentRunner {
   private readonly mirror: SessionMirror;
   private readonly models: Models;
 
-  constructor(config: AgentConfig, mirror: SessionMirror, models: Models = builtinModels()) {
+  constructor(
+    config: AgentConfig,
+    mirror: SessionMirror,
+    models: Models = builtinModels({ credentials: new PiCredentialStore() }),
+  ) {
     this.config = config;
     this.mirror = mirror;
     this.models = models;
