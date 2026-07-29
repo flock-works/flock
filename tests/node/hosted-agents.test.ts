@@ -308,6 +308,53 @@ test("hosted-agent APIs create, serve scoped credentials, stop, and delete", asy
   assert.equal(hub.activeRuntime!.database.getAgent(createResponse.body.agent.id)?.status, "revoked");
 });
 
+test("members may create hosted agents with their own provider connection", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "flock-member-hosted-api-"));
+  const runtime = new FakeRuntime();
+  const hub = new HubServer({
+    config: hostedConfig(directory),
+    authenticator: new TestAuthenticator({
+      sub: "member-user",
+      email: "member@example.com",
+      displayName: "Member",
+      role: "member",
+    }),
+    hostedAgentRuntime: runtime,
+  });
+  await hub.start();
+  context.after(async () => hub.stop());
+  const project = await hub.activeRuntime!.createProject({
+    name: "Member Demo",
+    slug: "member-demo",
+  });
+  const connection = hub.activeRuntime!.database.upsertProviderConnection({
+    userSub: "member-user",
+    providerId: "openai-codex",
+    label: "member@example.com",
+    credential,
+  });
+  const address = hub.address;
+  assert.ok(address);
+
+  const response = await apiRequest<{ agent: { hosting: { createdBy: string } } }>(
+    `http://127.0.0.1:${address.port}`,
+    `/api/v1/projects/${project.id}/hosted-agents`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        name: "member-cloud",
+        connectionId: connection.id,
+        model: "openai-codex/gpt-5.4",
+        thinkingLevel: "medium",
+      }),
+    },
+  );
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.agent.hosting.createdBy, "member-user");
+  assert.equal(runtime.runs.length, 1);
+});
+
 test("Nous connection models are owner-scoped, cached, and validated before installation", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "flock-nous-hosted-api-"));
   const runtime = new FakeRuntime();

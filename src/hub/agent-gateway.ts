@@ -57,6 +57,7 @@ export class AgentGateway {
       this.runtime.database.updateAgentPresence(agent.id, "offline");
       this.events.publish({
         type: "presence",
+        projectId: agent.projectId,
         agentId: agent.id,
         status: "offline",
         lastSeenAt: new Date().toISOString(),
@@ -100,6 +101,7 @@ export class AgentGateway {
       }
       this.events.publish({
         type: "job",
+        projectId: job.projectId,
         jobId: job.id,
         status: "queued",
         agentId: null,
@@ -122,6 +124,13 @@ export class AgentGateway {
       reason: job.error ?? "Cancelled",
     });
     state.activeJobId = null;
+  }
+
+  disconnectAgent(agentId: string, reason = "Agent access revoked"): void {
+    const state = this.sockets.get(agentId);
+    if (!state) return;
+    this.sockets.delete(agentId);
+    state.socket.close(4003, reason);
   }
 
   close(): void {
@@ -194,6 +203,7 @@ export class AgentGateway {
       }
       this.events.publish({
         type: "presence",
+        projectId: state.agent.projectId,
         agentId: state.agent.id,
         status: "online",
         lastSeenAt: new Date().toISOString(),
@@ -226,7 +236,14 @@ export class AgentGateway {
       });
       state.activeJobId = job.id;
       state.agent = this.runtime.database.updateAgentPresence(state.agent.id, "busy");
-      this.events.publish({ type: "job", jobId: job.id, status: "running", agentId: state.agent.id, leafId: job.branchLeafId });
+      this.events.publish({
+        type: "job",
+        projectId: job.projectId,
+        jobId: job.id,
+        status: "running",
+        agentId: state.agent.id,
+        leafId: job.branchLeafId,
+      });
       return;
     }
 
@@ -270,6 +287,7 @@ export class AgentGateway {
       });
       this.events.publish({
         type: "run.event",
+        projectId: job.projectId,
         jobId: job.id,
         eventSeq: message.eventSeq,
         event: message.event,
@@ -291,6 +309,7 @@ export class AgentGateway {
       state.agent = this.runtime.database.updateAgentPresence(state.agent.id, "online");
       this.events.publish({
         type: "job",
+        projectId: job.projectId,
         jobId: job.id,
         status: job.status,
         agentId: state.agent.id,
@@ -331,6 +350,7 @@ export class AgentGateway {
     });
     this.events.publish({
       type: "job",
+      projectId: offered.projectId,
       jobId: offered.id,
       status: "offered",
       agentId: state.agent.id,

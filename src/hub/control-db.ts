@@ -777,6 +777,15 @@ export class ControlDatabase {
     ).map(toAgent).map((agent) => this.attachHosting(agent));
   }
 
+  resetAgentPresence(): void {
+    this.database
+      .prepare(`
+        UPDATE agents SET status = 'offline'
+        WHERE revoked_at IS NULL AND status IN ('online', 'busy')
+      `)
+      .run();
+  }
+
   getHostedAgent(agentId: string): HostedAgentRecord | undefined {
     const row = this.database
       .prepare(`
@@ -1331,7 +1340,7 @@ export class ControlDatabase {
     const terminal = jobs.every((job) => ["completed", "failed", "aborted"].includes(job.status));
     if (!terminal) return;
     const completed = jobs.filter((job) => job.status === "completed");
-    const status = completed.length > 0 ? (completed.length === 1 ? "completed" : "awaiting_selection") : "failed";
+    const status = completed.length > 0 ? "awaiting_selection" : "failed";
     this.database.prepare("UPDATE dispatches SET status = ? WHERE id = ?").run(status, dispatchId);
   }
 }

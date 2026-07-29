@@ -285,6 +285,7 @@ export class HubServer {
       });
       this.events.publish({
         type: "presence",
+        projectId: enrolled.agent.projectId,
         agentId: enrolled.agent.id,
         status: enrolled.agent.status,
         lastSeenAt: new Date().toISOString(),
@@ -428,6 +429,7 @@ export class HubServer {
       if (action === "dispatches" && request.method === "GET") {
         const dispatches = runtime.database.listDispatches(projectId).map((dispatch) => ({
           ...dispatch,
+          author: runtime.database.getUser(dispatch.userSub) ?? null,
           jobs: runtime.database.listJobsForDispatch(dispatch.id),
         }));
         return sendJson(response, 200, { dispatches });
@@ -485,6 +487,35 @@ export class HubServer {
         await this.gateway?.offerAvailableJobs();
         return sendJson(response, 201, { dispatch: created.dispatch, jobs: created.jobs });
       }
+    }
+
+    const agentMatch = url.pathname.match(/^\/api\/v1\/agents\/([^/]+)$/);
+    if (agentMatch && request.method === "DELETE") {
+      requireRole(identity, "admin");
+      const agentId = decodeURIComponent(agentMatch[1]!);
+      const agent = runtime.database.getAgent(agentId);
+      if (!agent) throw new FlockError("agent_not_found", "Agent not found", 404);
+      if (agent.hosting) {
+        throw new FlockError(
+          "hosted_agent_managed",
+          "Hosted agents must be deleted through the hosted-agent endpoint",
+          409,
+        );
+      }
+      runtime.database.revokeAgent(agent.id, identity.sub);
+      for (const job of runtime.database.abortActiveJobsForAgent(agent.id, identity.sub)) {
+        this.gateway?.abortJob(job);
+      }
+      this.gateway?.disconnectAgent(agent.id);
+      const revoked = runtime.database.getAgent(agent.id);
+      this.events.publish({
+        type: "presence",
+        projectId: agent.projectId,
+        agentId: agent.id,
+        status: "revoked",
+        lastSeenAt: new Date().toISOString(),
+      });
+      return sendJson(response, 200, { agent: revoked });
     }
 
     const hostedAgentMatch = url.pathname.match(/^\/api\/v1\/hosted-agents\/([^/]+)$/);
@@ -566,7 +597,14 @@ export class HubServer {
     if (cancelMatch && request.method === "POST") {
       const job = runtime.database.abortJob(decodeURIComponent(cancelMatch[1]!), identity.sub);
       this.gateway?.abortJob(job);
-      this.events.publish({ type: "job", jobId: job.id, status: job.status, agentId: job.assignedAgentId, leafId: job.branchLeafId });
+      this.events.publish({
+        type: "job",
+        projectId: job.projectId,
+        jobId: job.id,
+        status: job.status,
+        agentId: job.assignedAgentId,
+        leafId: job.branchLeafId,
+      });
       return sendJson(response, 200, { job });
     }
 
@@ -594,6 +632,9 @@ export class HubServer {
         const identity = await this.authenticator.authenticate(request);
         if (!identity) throw new FlockError("unauthorized", "Sign in is required", 401);
         const projectId = url.searchParams.get("projectId");
+        if (!projectId || !this.runtime.database.getProject(projectId)) {
+          throw new FlockError("project_not_found", "Project not found", 404);
+        }
         const after = Number(url.searchParams.get("after") ?? 0);
         this.browserSockets.handleUpgrade(request, socket, head, (websocket) => {
           this.events.add(websocket, projectId, Number.isInteger(after) ? after : 0);
@@ -632,6 +673,7 @@ export class HubServer {
   private async requireIdentity(request: IncomingMessage): Promise<HumanIdentity> {
     const identity = await this.requireAuthenticator().authenticate(request);
     if (!identity) throw new FlockError("unauthorized", "Sign in is required", 401);
+    this.requireRuntime().database.upsertUser(identity);
     return identity;
   }
 

@@ -9,6 +9,7 @@ import {
   OidcAuthenticator,
   requestUrl,
   safeReturnTo,
+  TestAuthenticator,
 } from "../../src/hub/auth.ts";
 import type { HubConfig } from "../../src/hub/config.ts";
 import { ControlDatabase } from "../../src/hub/control-db.ts";
@@ -105,6 +106,28 @@ test("keeps login return paths on the current origin", () => {
   assert.equal(safeReturnTo("/app?project=one"), "/app?project=one");
   assert.equal(safeReturnTo("https://evil.example/app"), "/");
   assert.equal(safeReturnTo("//evil.example/app"), "/");
+});
+
+test("development authentication preserves the request origin and safe return path", async () => {
+  const authenticator = new TestAuthenticator();
+  assert.equal(
+    (
+      await authenticator.beginLogin(
+        "/test-user/chat?project=one",
+        new URL("http://localhost:4747/api/v1/auth/login"),
+      )
+    ).href,
+    "http://localhost:4747/test-user/chat?project=one",
+  );
+  assert.equal(
+    (
+      await authenticator.beginLogin(
+        "https://evil.example/app",
+        new URL("http://127.0.0.1:4747/api/v1/auth/login"),
+      )
+    ).href,
+    "http://127.0.0.1:4747/",
+  );
 });
 
 test("uses a direct loopback origin for local development requests", () => {

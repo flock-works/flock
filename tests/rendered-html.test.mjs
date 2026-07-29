@@ -44,14 +44,16 @@ test("server-renders the collaboration workspace at app", async () => {
   const response = await render("/app");
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /Company-wide coordination/);
+  assert.match(html, /Coordinate work across selected project agents/);
+  assert.match(html, /No messages yet/);
   assert.match(html, /Flock Works/i);
+  assert.doesNotMatch(html, /Morning crew|Cindy joined|Private conversation/i);
 });
 
 test("server-renders username-scoped global and nested tab routes", async () => {
   const routes = [
     ["/test-user/activity", /Everything that needs your attention/i],
-    ["/test-user/chat/tasks", /Work in motion/i],
+    ["/test-user/chat/tasks", /This channel view is not available yet/i],
     ["/test-user/settings/notifications", /Push notifications are active/i],
   ];
 

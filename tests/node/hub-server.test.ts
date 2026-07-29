@@ -218,6 +218,18 @@ test("hub completes an authenticated agent job and selects its only branch", asy
     }),
   });
   assert.equal(dispatchResponse.status, 201);
+  const dispatchList = await jsonRequest<{
+    dispatches: Array<{
+      id: string;
+      author: { sub: string; email: string; displayName: string; role: string } | null;
+    }>;
+  }>(baseUrl, `/api/v1/projects/${projectId}/dispatches`);
+  assert.deepEqual(dispatchList.body.dispatches[0]?.author, {
+    sub: "test-user",
+    email: "test@example.com",
+    displayName: "Test User",
+    role: "admin",
+  });
   const job = await messages.next("job.start");
   assert.equal(job.jobId, dispatchResponse.body.jobs[0]!.id);
   assert.equal(job.recovery, false);
@@ -328,6 +340,66 @@ test("hub completes an authenticated agent job and selects its only branch", asy
   );
   const repairedSnapshot = await reconnectMessages.next("session.snapshot");
   assert.equal(repairedSnapshot.cursor, 3);
+
+  const revoked = await jsonRequest<{
+    agent: { id: string; status: string; revokedAt: string | null };
+  }>(baseUrl, `/api/v1/agents/${agentResponse.body.agent.id}`, {
+    method: "DELETE",
+  });
+  assert.equal(revoked.status, 200);
+  assert.equal(revoked.body.agent.id, agentResponse.body.agent.id);
+  assert.equal(revoked.body.agent.status, "revoked");
+  assert.ok(revoked.body.agent.revokedAt);
+
+  const rejectedReconnect = new WebSocket(
+    `ws://127.0.0.1:${address.port}/api/v1/agent/socket`,
+    { headers: { Authorization: `Bearer ${agentResponse.body.token}` } },
+  );
+  await assert.rejects(
+    new Promise<void>((resolve, reject) => {
+      rejectedReconnect.once("open", resolve);
+      rejectedReconnect.once("error", reject);
+    }),
+    /Unexpected server response: 401/,
+  );
+});
+
+test("members cannot revoke local agents", async (context) => {
+  const dataRoot = await mkdtemp(join(tmpdir(), "flock-member-revoke-test-"));
+  const hub = new HubServer({
+    config: testConfig(dataRoot),
+    authenticator: new TestAuthenticator({
+      sub: "member-user",
+      email: "member@example.com",
+      displayName: "Member User",
+      role: "member",
+    }),
+  });
+  await hub.start();
+  context.after(async () => hub.stop());
+  const address = hub.address;
+  const runtime = hub.activeRuntime;
+  assert.ok(address);
+  assert.ok(runtime);
+  const project = await runtime.createProject({ name: "Demo", slug: "demo" });
+  const enrollment = runtime.database.createEnrollment({
+    projectId: project.id,
+    nameHint: "shark",
+    createdBy: "owner",
+  });
+  const enrolled = runtime.database.enrollAgent({
+    enrollmentSecret: enrollment.secret,
+    capabilities,
+  });
+
+  const response = await jsonRequest<{ error: { code: string } }>(
+    `http://127.0.0.1:${address.port}`,
+    `/api/v1/agents/${enrolled.agent.id}`,
+    { method: "DELETE" },
+  );
+  assert.equal(response.status, 403);
+  assert.equal(response.body.error.code, "forbidden");
+  assert.equal(runtime.database.getAgent(enrolled.agent.id)?.revokedAt, null);
 });
 
 test("only one leader lock may own a shared hub directory", async (context) => {

@@ -4,6 +4,7 @@ import type { SessionTreeEntry } from "@earendil-works/pi-agent-core";
 import { uuidv7 } from "@earendil-works/pi-ai";
 import { FlockError } from "../shared/errors.ts";
 import { createId, payloadHash } from "../shared/ids.ts";
+import { Mutex } from "../shared/mutex.ts";
 import { PiJsonlSession, type SessionAppendResult } from "../shared/pi-session.ts";
 import { ControlDatabase, type DispatchRecord, type JobRecord, type ProjectRecord } from "./control-db.ts";
 
@@ -11,6 +12,7 @@ export class HubRuntime {
   readonly dataRoot: string;
   readonly database: ControlDatabase;
   private readonly sessions = new Map<string, PiJsonlSession>();
+  private readonly dispatchMutexes = new Map<string, Mutex>();
 
   private constructor(dataRoot: string, database: ControlDatabase) {
     this.dataRoot = dataRoot;
@@ -21,6 +23,7 @@ export class HubRuntime {
     await mkdir(dataRoot, { recursive: true });
     const database = new ControlDatabase(join(dataRoot, "control.sqlite"), credentialKey);
     const runtime = new HubRuntime(dataRoot, database);
+    database.resetAgentPresence();
     for (const project of database.listProjects()) {
       const session = await PiJsonlSession.open(PiJsonlSession.projectPath(dataRoot, project.id));
       if (session.header.id !== project.sessionId) {
@@ -35,6 +38,7 @@ export class HubRuntime {
   close(): void {
     this.database.close();
     this.sessions.clear();
+    this.dispatchMutexes.clear();
   }
 
   async createProject(input: { name: string; slug: string }): Promise<ProjectRecord> {
@@ -71,64 +75,66 @@ export class HubRuntime {
     userSub: string;
     baseEntryId?: string;
   }): Promise<{ dispatch: DispatchRecord; jobs: JobRecord[]; entry: SessionAppendResult }> {
-    const text = input.text.trim();
-    if (!text) throw new FlockError("empty_dispatch", "Message cannot be empty");
-    if (text.length > 100_000) throw new FlockError("dispatch_too_large", "Message is too large", 413);
-    if (this.database.hasUnresolvedDispatch(input.projectId)) {
-      throw new FlockError(
-        "dispatch_unresolved",
-        "Wait for the active dispatch to finish and select a branch before sending another message",
-        409,
-      );
-    }
-    const targetAgentIds = [...new Set(input.targetAgentIds)];
-    if (targetAgentIds.length === 0) throw new FlockError("no_targets", "Choose at least one agent");
-    for (const agentId of targetAgentIds) {
-      const agent = this.database.getAgent(agentId);
-      if (!agent || agent.projectId !== input.projectId || agent.revokedAt) {
-        throw new FlockError("invalid_target", `Agent ${agentId} cannot receive this dispatch`, 409);
+    return this.dispatchMutex(input.projectId).run(async () => {
+      const text = input.text.trim();
+      if (!text) throw new FlockError("empty_dispatch", "Message cannot be empty");
+      if (text.length > 100_000) throw new FlockError("dispatch_too_large", "Message is too large", 413);
+      if (this.database.hasUnresolvedDispatch(input.projectId)) {
+        throw new FlockError(
+          "dispatch_unresolved",
+          "Wait for the active dispatch to finish and select a branch before sending another message",
+          409,
+        );
       }
-      if (
-        agent.hosting &&
-        (agent.hosting.desiredState !== "running" ||
-          agent.hosting.runtimeState === "attention" ||
-          this.database.getProviderConnection(agent.hosting.connectionId)?.status !== "connected")
-      ) {
-        throw new FlockError("agent_unavailable", `Hosted agent ${agent.name} requires attention`, 409);
+      const targetAgentIds = [...new Set(input.targetAgentIds)];
+      if (targetAgentIds.length === 0) throw new FlockError("no_targets", "Choose at least one agent");
+      for (const agentId of targetAgentIds) {
+        const agent = this.database.getAgent(agentId);
+        if (!agent || agent.projectId !== input.projectId || agent.revokedAt) {
+          throw new FlockError("invalid_target", `Agent ${agentId} cannot receive this dispatch`, 409);
+        }
+        if (
+          agent.hosting &&
+          (agent.hosting.desiredState !== "running" ||
+            agent.hosting.runtimeState === "attention" ||
+            this.database.getProviderConnection(agent.hosting.connectionId)?.status !== "connected")
+        ) {
+          throw new FlockError("agent_unavailable", `Hosted agent ${agent.name} requires attention`, 409);
+        }
       }
-    }
-    const session = this.getSession(input.projectId);
-    const baseEntryId = input.baseEntryId ?? session.leafId;
-    if (baseEntryId !== null && !session.getEntry(baseEntryId)) {
-      throw new FlockError("invalid_branch", "Dispatch base entry does not exist", 409);
-    }
-    const dispatchId = `dsp_${uuidv7().replaceAll("-", "")}`;
-    const entry = await session.appendGenerated(
-      {
-        type: "custom",
-        customType: "flock.dispatch",
-        data: {
-          schemaVersion: 1,
-          dispatchId,
-          userSub: input.userSub,
-          targetAgentIds,
-          text,
-          textHash: payloadHash(text),
+      const session = this.getSession(input.projectId);
+      const baseEntryId = input.baseEntryId ?? session.leafId;
+      if (baseEntryId !== null && !session.getEntry(baseEntryId)) {
+        throw new FlockError("invalid_branch", "Dispatch base entry does not exist", 409);
+      }
+      const dispatchId = `dsp_${uuidv7().replaceAll("-", "")}`;
+      const entry = await session.appendGenerated(
+        {
+          type: "custom",
+          customType: "flock.dispatch",
+          data: {
+            schemaVersion: 1,
+            dispatchId,
+            userSub: input.userSub,
+            targetAgentIds,
+            text,
+            textHash: payloadHash(text),
+          },
         },
-      },
-      baseEntryId,
-    );
-    this.indexEntry(input.projectId, entry);
-    const created = this.database.createDispatch({
-      dispatchId,
-      projectId: input.projectId,
-      baseEntryId,
-      customEntryId: entry.entry.id,
-      text,
-      userSub: input.userSub,
-      targetAgentIds,
+        baseEntryId,
+      );
+      this.indexEntry(input.projectId, entry);
+      const created = this.database.createDispatch({
+        dispatchId,
+        projectId: input.projectId,
+        baseEntryId,
+        customEntryId: entry.entry.id,
+        text,
+        userSub: input.userSub,
+        targetAgentIds,
+      });
+      return { ...created, entry };
     });
-    return { ...created, entry };
   }
 
   async appendJobEntry(input: {
@@ -159,17 +165,21 @@ export class HubRuntime {
     leafId: string;
     actor: string;
   }): Promise<{ dispatch: DispatchRecord; entry: SessionAppendResult }> {
-    const dispatch = this.database.getDispatch(input.dispatchId);
-    if (!dispatch) throw new FlockError("dispatch_not_found", "Dispatch not found", 404);
-    const session = this.getSession(dispatch.projectId);
-    if (!session.getEntry(input.leafId)) throw new FlockError("invalid_branch", "Branch leaf does not exist", 409);
-    const selected = this.database.selectDispatchBranch(input);
-    const entry = await session.appendGenerated(
-      { type: "leaf", targetId: input.leafId },
-      session.leafId,
-    );
-    this.indexEntry(dispatch.projectId, entry);
-    return { dispatch: selected, entry };
+    const initial = this.database.getDispatch(input.dispatchId);
+    if (!initial) throw new FlockError("dispatch_not_found", "Dispatch not found", 404);
+    return this.dispatchMutex(initial.projectId).run(async () => {
+      const dispatch = this.database.getDispatch(input.dispatchId);
+      if (!dispatch) throw new FlockError("dispatch_not_found", "Dispatch not found", 404);
+      const session = this.getSession(dispatch.projectId);
+      if (!session.getEntry(input.leafId)) throw new FlockError("invalid_branch", "Branch leaf does not exist", 409);
+      const selected = this.database.selectDispatchBranch(input);
+      const entry = await session.appendGenerated(
+        { type: "leaf", targetId: input.leafId },
+        session.leafId,
+      );
+      this.indexEntry(dispatch.projectId, entry);
+      return { dispatch: selected, entry };
+    });
   }
 
   async autoSelectSingleJob(job: JobRecord): Promise<SessionAppendResult | undefined> {
@@ -191,5 +201,14 @@ export class HubRuntime {
 
   private indexEntry(projectId: string, item: { seq: number; entry: SessionTreeEntry; hash: string }): void {
     this.database.indexEntry(projectId, item.seq, item.entry.id, item.hash, item.entry.timestamp);
+  }
+
+  private dispatchMutex(projectId: string): Mutex {
+    let mutex = this.dispatchMutexes.get(projectId);
+    if (!mutex) {
+      mutex = new Mutex();
+      this.dispatchMutexes.set(projectId, mutex);
+    }
+    return mutex;
   }
 }

@@ -216,10 +216,10 @@ export type JobStart = Static<typeof JobStartSchema>;
 export type HubAgentMessage = Static<typeof HubAgentMessageSchema>;
 
 export type BrowserEvent =
-  | { type: "presence"; cursor: number; agentId: string; status: string; lastSeenAt: string }
-  | { type: "job"; cursor: number; jobId: string; status: string; agentId: string | null; leafId: string | null }
+  | { type: "presence"; cursor: number; projectId: string; agentId: string; status: string; lastSeenAt: string }
+  | { type: "job"; cursor: number; projectId: string; jobId: string; status: string; agentId: string | null; leafId: string | null }
   | { type: "entry"; cursor: number; projectId: string; seq: number; entry: unknown }
-  | { type: "run.event"; cursor: number; jobId: string; eventSeq: number; event: unknown };
+  | { type: "run.event"; cursor: number; projectId: string; jobId: string; eventSeq: number; event: unknown };
 
 export type BrowserEventInput = BrowserEvent extends infer Event
   ? Event extends BrowserEvent

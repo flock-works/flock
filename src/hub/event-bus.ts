@@ -4,13 +4,13 @@ import type { BrowserEvent, BrowserEventInput } from "../shared/protocol.ts";
 export class BrowserEventBus {
   private cursor = 0;
   private readonly retained: BrowserEvent[] = [];
-  private readonly clients = new Map<WebSocket, string | null>();
+  private readonly clients = new Map<WebSocket, string>();
 
-  add(socket: WebSocket, projectId: string | null, afterCursor = 0): void {
+  add(socket: WebSocket, projectId: string, afterCursor = 0): void {
     this.clients.set(socket, projectId);
     for (const event of this.retained) {
       if (event.cursor <= afterCursor) continue;
-      if ("projectId" in event && projectId !== null && event.projectId !== projectId) continue;
+      if (event.projectId !== projectId) continue;
       socket.send(JSON.stringify(event));
     }
     socket.once("close", () => this.clients.delete(socket));
@@ -23,7 +23,7 @@ export class BrowserEventBus {
     const serialized = JSON.stringify(complete);
     for (const [socket, projectId] of this.clients) {
       if (socket.readyState !== WebSocket.OPEN) continue;
-      if ("projectId" in complete && projectId !== null && complete.projectId !== projectId) continue;
+      if (complete.projectId !== projectId) continue;
       socket.send(serialized);
     }
     return complete;

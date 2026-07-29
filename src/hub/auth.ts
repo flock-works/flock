@@ -130,8 +130,8 @@ export class TestAuthenticator implements HumanAuthenticator {
     return this.identity;
   }
 
-  async beginLogin(): Promise<URL> {
-    return new URL("http://localhost/");
+  async beginLogin(returnTo: string, requestUrl = new URL("http://localhost/")): Promise<URL> {
+    return new URL(safeReturnTo(returnTo), requestUrl.origin);
   }
 
   async finishLogin(): Promise<{ identity: HumanIdentity; returnTo: string; sessionSecret: string }> {

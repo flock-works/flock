@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import {
   adminOnlySettings,
@@ -14,13 +14,7 @@ import {
   type SettingKey,
   type WorkspaceView,
 } from "@/app/workspace-route";
-
-type UiTask = {
-  title: string;
-  status: string;
-  assignees: string[];
-  due: string;
-};
+import { buildAgentInstallCommand } from "@/src/shared/install-command";
 
 type UiMessage = {
   id: string | number;
@@ -32,10 +26,8 @@ type UiMessage = {
   color: string;
   text?: string;
   detail?: string;
-  thread?: string;
-  reactions?: string[];
-  task?: UiTask;
   timestamp?: number;
+  dispatchId?: string;
 };
 
 type HubProject = {
@@ -115,12 +107,17 @@ type HubJob = {
   assignedAgentId: string | null;
   status: string;
   branchLeafId: string | null;
+  error?: string | null;
 };
 
 type HubDispatch = {
   id: string;
   text: string;
   userSub: string;
+  author?: {
+    displayName: string;
+    email: string;
+  } | null;
   status: string;
   selectedLeafId: string | null;
   createdAt: string;
@@ -185,72 +182,6 @@ const settingGroups: Array<{ title: string; items: Array<{ key: SettingKey; labe
   },
 ];
 
-const baseMessages: UiMessage[] = [
-  {
-    id: 1,
-    kind: "human",
-    name: "Edward",
-    handle: "@edward",
-    time: "9:41 AM",
-    avatar: "ED",
-    color: "yellow",
-    text: "Morning crew — can we get the hub sync protocol into a reviewable state today? I’d like the reconnect path tested before we invite the rest of the team.",
-    reactions: ["⚡ 4", "👀 2"],
-  },
-  {
-    id: 2,
-    kind: "agent",
-    name: "shark",
-    handle: "agent · coding",
-    time: "9:43 AM",
-    avatar: "SH",
-    color: "blue",
-    text: "I picked up the reconnect path. The client now resumes from its last acknowledged entry sequence and rejects stale lease epochs.",
-    detail: "Working in branch agent/shark/reconnect · 12 files indexed",
-    reactions: ["🦈 3", "✓ 1"],
-  },
-  {
-    id: 3,
-    kind: "task",
-    name: "Task created",
-    handle: "from shark’s response",
-    time: "9:44 AM",
-    avatar: "✓",
-    color: "pink",
-    task: {
-      title: "Add failover coverage for lease recovery",
-      status: "IN PROGRESS",
-      assignees: ["SH", "CI"],
-      due: "Today",
-    },
-  },
-  {
-    id: 4,
-    kind: "agent",
-    name: "Cindy",
-    handle: "agent · systems",
-    time: "10:02 AM",
-    avatar: "CI",
-    color: "purple",
-    text: "I reviewed the JSONL writer. One edge remains: a leader can fail after fsync but before the index transaction. I’m adding startup reconciliation for that window.",
-    detail: "2 tool calls · read session-store.ts · edited recovery.test.ts",
-    thread: "3 replies · Edward, shark, Cindy",
-    reactions: ["💡 2"],
-  },
-];
-
-const tasks = [
-  { title: "Reconnect from durable cursor", owner: "shark", status: "Review", color: "blue" },
-  { title: "Reconcile JSONL after failover", owner: "Cindy", status: "In progress", color: "purple" },
-  { title: "Draft agent enrollment copy", owner: "Edward", status: "Todo", color: "yellow" },
-];
-
-const files = [
-  { name: "session-protocol.md", meta: "Markdown · 18 KB", by: "shark", icon: "MD" },
-  { name: "hub-architecture.png", meta: "PNG · 1.4 MB", by: "Edward", icon: "PX" },
-  { name: "recovery.test.ts", meta: "TypeScript · 24 KB", by: "Cindy", icon: "TS" },
-];
-
 function useHubState() {
   const [identity, setIdentity] = useState<HubIdentity | null>(null);
   const [projects, setProjects] = useState<HubProject[]>([]);
@@ -258,6 +189,7 @@ function useHubState() {
   const [agents, setAgents] = useState<HubAgent[]>([]);
   const [dispatches, setDispatches] = useState<HubDispatch[]>([]);
   const [entries, setEntries] = useState<HubEntry[]>([]);
+  const [selectedLeafId, setSelectedLeafId] = useState<string | null>(null);
   const [connection, setConnection] = useState<"connecting" | "live" | "offline">("connecting");
   const [llmProviders, setLlmProviders] = useState<LlmProvider[]>([]);
   const [providerConnections, setProviderConnections] = useState<ProviderConnection[]>([]);
@@ -281,7 +213,7 @@ function useHubState() {
   const refreshProject = useCallback(async (selectedProjectId: string) => {
     const [agentsResult, treeResult, dispatchResult] = await Promise.all([
       fetchJson<{ agents: HubAgent[] }>(`/api/v1/projects/${encodeURIComponent(selectedProjectId)}/agents`),
-      fetchJson<{ session: { entries: HubEntry[] } }>(
+      fetchJson<{ session: { entries: HubEntry[]; selectedLeafId: string | null } }>(
         `/api/v1/projects/${encodeURIComponent(selectedProjectId)}/tree`,
       ),
       fetchJson<{ dispatches: HubDispatch[] }>(
@@ -290,6 +222,7 @@ function useHubState() {
     ]);
     setAgents(agentsResult.agents);
     setEntries(treeResult.session.entries);
+    setSelectedLeafId(treeResult.session.selectedLeafId);
     setDispatches(dispatchResult.dispatches);
   }, [fetchJson]);
 
@@ -326,37 +259,76 @@ function useHubState() {
 
   useEffect(() => {
     if (!projectId) return;
-    let cancelled = false;
-    queueMicrotask(() => {
-      if (!cancelled) {
-        void refreshProject(projectId).catch(() => setConnection("offline"));
-      }
-    });
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(
-      `${protocol}//${window.location.host}/api/v1/events?projectId=${encodeURIComponent(projectId)}`,
-    );
+    let stopped = false;
+    let socket: WebSocket | undefined;
+    let reconnectTimer: number | undefined;
     let refreshTimer: number | undefined;
-    socket.onopen = () => setConnection("live");
-    socket.onmessage = () => {
-      window.clearTimeout(refreshTimer);
-      refreshTimer = window.setTimeout(() => {
-        void refreshProject(projectId);
-      }, 40);
+    let reconnectAttempt = 0;
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+
+    const refresh = () => {
+      void refreshProject(projectId).catch(() => {
+        if (!stopped) setConnection("offline");
+      });
     };
-    socket.onclose = () => setConnection("offline");
+    const connect = () => {
+      if (stopped) return;
+      setConnection("connecting");
+      socket = new WebSocket(
+        `${protocol}//${window.location.host}/api/v1/events?projectId=${encodeURIComponent(projectId)}`,
+      );
+      socket.onopen = () => {
+        reconnectAttempt = 0;
+        setConnection("live");
+        refresh();
+      };
+      socket.onmessage = () => {
+        window.clearTimeout(refreshTimer);
+        refreshTimer = window.setTimeout(refresh, 40);
+      };
+      socket.onerror = () => socket?.close();
+      socket.onclose = () => {
+        if (stopped) return;
+        setConnection("offline");
+        reconnectAttempt += 1;
+        const delay = Math.min(15_000, 500 * 2 ** Math.min(reconnectAttempt - 1, 5));
+        reconnectTimer = window.setTimeout(connect, delay);
+      };
+    };
+
+    refresh();
+    connect();
     return () => {
-      cancelled = true;
+      stopped = true;
+      window.clearTimeout(reconnectTimer);
       window.clearTimeout(refreshTimer);
-      socket.close();
+      socket?.close();
     };
   }, [projectId, refreshProject]);
 
   const messages = useMemo<UiMessage[]>(() => {
-    if (!projectId || connection === "offline") return baseMessages;
+    if (!projectId) return [];
     const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
     const entriesById = new Map(entries.map(({ entry }) => [entry.id, entry]));
-    const agentForEntry = (entry: HubEntry["entry"]): HubAgent | undefined => {
+    const canonicalEntryIds = new Set<string>();
+    const awaitingSelection = new Set(
+      dispatches
+        .filter((dispatch) => dispatch.status === "awaiting_selection")
+        .map((dispatch) => dispatch.id),
+    );
+    let canonicalCursor = selectedLeafId
+      ? entriesById.get(selectedLeafId)
+      : undefined;
+    while (canonicalCursor && !canonicalEntryIds.has(canonicalCursor.id)) {
+      canonicalEntryIds.add(canonicalCursor.id);
+      canonicalCursor = canonicalCursor.parentId
+        ? entriesById.get(canonicalCursor.parentId)
+        : undefined;
+    }
+    const turnForEntry = (entry: HubEntry["entry"]): {
+      agent?: HubAgent;
+      dispatchId?: string;
+    } => {
       let cursor: HubEntry["entry"] | undefined = entry;
       while (cursor) {
         if (
@@ -364,27 +336,42 @@ function useHubState() {
           ["flock.agent_turn", "flock.recovery"].includes(cursor.customType ?? "") &&
           typeof cursor.data?.agentId === "string"
         ) {
-          return agentsById.get(cursor.data.agentId);
+          return {
+            agent: agentsById.get(cursor.data.agentId),
+            dispatchId: typeof cursor.data.dispatchId === "string"
+              ? cursor.data.dispatchId
+              : undefined,
+          };
         }
         cursor = cursor.parentId ? entriesById.get(cursor.parentId) : undefined;
       }
-      return undefined;
+      return {};
     };
-    const humanMessages: UiMessage[] = dispatches.map((dispatch) => ({
-      id: dispatch.id,
-      kind: "human",
-      name: identity?.displayName ?? "Member",
-      handle: `@${dispatch.userSub}`,
-      time: formatTime(dispatch.createdAt),
-      timestamp: Date.parse(dispatch.createdAt),
-      avatar: initials(identity?.displayName ?? "Member"),
-      color: "yellow",
-      text: dispatch.text,
-      reactions: [],
-    }));
+    const humanMessages: UiMessage[] = dispatches.map((dispatch) => {
+      const authorName = dispatch.author?.displayName
+        ?? dispatch.author?.email
+        ?? dispatch.userSub;
+      return {
+        id: dispatch.id,
+        kind: "human",
+        name: authorName,
+        handle: dispatch.author?.email ?? dispatch.userSub,
+        time: formatTime(dispatch.createdAt),
+        timestamp: Date.parse(dispatch.createdAt),
+        avatar: initials(authorName),
+        color: "yellow",
+        text: dispatch.text,
+        dispatchId: dispatch.id,
+      };
+    });
     const agentMessages: UiMessage[] = entries.flatMap(({ entry }) => {
-      if (entry.type !== "message" || entry.message?.role !== "assistant") return [];
-      const agent = agentForEntry(entry);
+      if (
+        entry.type !== "message"
+        || entry.message?.role !== "assistant"
+        || !canonicalEntryIds.has(entry.id)
+      ) return [];
+      const { agent, dispatchId } = turnForEntry(entry);
+      if (dispatchId && awaitingSelection.has(dispatchId)) return [];
       const text = messageText(entry.message.content);
       if (!text && entry.message.stopReason !== "error") return [];
       return [{
@@ -398,13 +385,13 @@ function useHubState() {
         color: agentColor(agent?.id ?? entry.id),
         text: text || entry.message.errorMessage || "The model run ended with an error.",
         detail: `${entry.message.model ?? "model"} · ${entry.message.stopReason ?? "complete"}`,
-        reactions: [],
+        dispatchId,
       }];
     });
     return [...humanMessages, ...agentMessages].sort(
       (left, right) => (left.timestamp ?? 0) - (right.timestamp ?? 0),
     );
-  }, [agents, connection, dispatches, entries, identity, projectId]);
+  }, [agents, dispatches, entries, projectId, selectedLeafId]);
 
   const sendDispatch = useCallback(async (text: string, targetAgentIds: string[]) => {
     if (!projectId) throw new Error("No project is selected");
@@ -419,6 +406,14 @@ function useHubState() {
     await fetchJson(`/api/v1/dispatches/${encodeURIComponent(dispatchId)}/select`, {
       method: "POST",
       body: JSON.stringify({ leafId }),
+    });
+    if (projectId) await refreshProject(projectId);
+  }, [fetchJson, projectId, refreshProject]);
+
+  const cancelJob = useCallback(async (jobId: string) => {
+    await fetchJson(`/api/v1/jobs/${encodeURIComponent(jobId)}/cancel`, {
+      method: "POST",
+      body: "{}",
     });
     if (projectId) await refreshProject(projectId);
   }, [fetchJson, projectId, refreshProject]);
@@ -545,6 +540,14 @@ function useHubState() {
     if (projectId) await refreshProject(projectId);
   }, [fetchJson, projectId, refreshProject]);
 
+  const revokeAgent = useCallback(async (agentId: string) => {
+    await fetchJson(`/api/v1/agents/${encodeURIComponent(agentId)}`, {
+      method: "DELETE",
+      body: "{}",
+    });
+    if (projectId) await refreshProject(projectId);
+  }, [fetchJson, projectId, refreshProject]);
+
   const logout = useCallback(async () => {
     const response = await fetch("/api/v1/auth/logout", {
       method: "POST",
@@ -563,10 +566,13 @@ function useHubState() {
     setProjectId,
     agents,
     dispatches,
+    entries,
+    selectedLeafId,
     messages,
     connection,
     sendDispatch,
     selectBranch,
+    cancelJob,
     createEnrollment,
     llmProviders,
     providerConnections,
@@ -577,6 +583,7 @@ function useHubState() {
     createHostedAgent,
     updateHostedAgent,
     deleteHostedAgent,
+    revokeAgent,
     logout,
   };
 }
@@ -794,11 +801,6 @@ function ConversationSidebar({
         }}
         className="mobile-drawer-nav"
       />
-      <button className="sidebar-search">
-        <span>⌕</span>
-        Jump to…
-        <kbd>⌘ K</kbd>
-      </button>
       <div className="conversation-scroll">
         <Section title="Channels">
           <button
@@ -812,7 +814,7 @@ function ConversationSidebar({
             all
           </button>
         </Section>
-        <Section title="Direct Messages">
+        <Section title="Targeted Agents">
           {agents
             .filter((agent) => agent.status !== "revoked")
             .map((agent) => (
@@ -826,7 +828,7 @@ function ConversationSidebar({
               >
                 <PixelAvatar text={initials(agent.name)} color={agentColor(agent.id)} size="sm" />
                 {agent.name}
-                <i className={`presence ${agent.status === "offline" ? "" : agent.status === "busy" ? "busy" : "online"}`} />
+                <i className={`presence ${agent.status === "busy" ? "busy" : agent.status === "online" ? "online" : ""}`} />
               </button>
             ))}
         </Section>
@@ -834,7 +836,6 @@ function ConversationSidebar({
       <div className="current-user">
         <PixelAvatar text={initials(identity?.displayName ?? "Edward")} color="yellow" />
         <div><strong>{identity?.displayName ?? "Edward"}</strong><span>{identity?.role === "admin" ? "Owner" : "Member"} · Online</span></div>
-        <button>•••</button>
       </div>
     </aside>
   );
@@ -872,35 +873,7 @@ function MobileNavigationDrawer({
   );
 }
 
-function Message({
-  message,
-  onOpenThread,
-}: {
-  message: UiMessage;
-  onOpenThread?: () => void;
-}) {
-  if (message.task) {
-    return (
-      <article className="message-row task-message">
-        <PixelAvatar text={message.avatar} color={message.color} />
-        <div className="message-body">
-          <div className="message-meta"><strong>{message.name}</strong><span>{message.handle}</span><time>{message.time}</time></div>
-          <div className="task-card">
-            <div className="task-card-top"><StatusPill tone="pink">TASK</StatusPill><span>•••</span></div>
-            <h3>{message.task.title}</h3>
-            <div className="task-card-bottom">
-              <StatusPill tone="blue">{message.task.status}</StatusPill>
-              <div className="stacked-avatars">
-                {message.task.assignees.map((a, i) => <PixelAvatar key={a} text={a} color={i ? "purple" : "blue"} size="sm" />)}
-              </div>
-              <span className="task-due">◷ {message.task.due}</span>
-            </div>
-          </div>
-        </div>
-      </article>
-    );
-  }
-
+function Message({ message }: { message: UiMessage }) {
   return (
     <article className="message-row">
       <PixelAvatar text={message.avatar} color={message.color} />
@@ -913,66 +886,8 @@ function Message({
         </div>
         {message.text && <p>{message.text}</p>}
         {message.detail && <div className="agent-detail"><span className="pulse-dot" />{message.detail}</div>}
-        {message.thread && <button className="thread-preview" onClick={onOpenThread}><span className="thread-lines">↳</span>{message.thread}<b>→</b></button>}
-        {message.reactions && (
-          <div className="reactions">{message.reactions.map((reaction) => <button key={reaction}>{reaction}</button>)}</div>
-        )}
       </div>
     </article>
-  );
-}
-
-function ThreadPane({ onClose }: { onClose: () => void }) {
-  const [text, setText] = useState("");
-
-  return (
-    <aside className="thread-pane" aria-label="Thread">
-      <header className="thread-header">
-        <div><strong>Thread</strong><span>— #all</span></div>
-        <div>
-          <button title="Search thread">⌕</button>
-          <button className="view-channel">↗ View in channel</button>
-          <button aria-label="Close thread" onClick={onClose}>×</button>
-        </div>
-      </header>
-      <div className="thread-feed">
-        <article className="thread-root">
-          <PixelAvatar text="ED" color="yellow" />
-          <div>
-            <div className="message-meta"><strong>Edward</strong><span>@edward</span><time>10:02 AM</time></div>
-            <p>@shark can you verify the hub reconnect path before we invite the team?</p>
-          </div>
-        </article>
-        <div className="thread-separator"><span>Beginning of replies</span><b>3 replies</b></div>
-        <article className="thread-reply">
-          <PixelAvatar text="SH" color="blue" />
-          <div>
-            <div className="message-meta"><strong>shark</strong><StatusPill tone="agent">AGENT</StatusPill><time>10:04 AM</time></div>
-            <p>The cursor resume path is covered. I’m running one final stale-lease case now.</p>
-          </div>
-        </article>
-        <article className="thread-reply">
-          <PixelAvatar text="CI" color="purple" />
-          <div>
-            <div className="message-meta"><strong>Cindy</strong><StatusPill tone="agent">AGENT</StatusPill><time>10:07 AM</time></div>
-            <p>I’ll validate the JSONL index reconciliation after that run lands.</p>
-          </div>
-        </article>
-        <div className="thread-event"><span>10:08 AM</span> shark started checking the reconnect branch</div>
-      </div>
-      <div className="thread-composer">
-        <textarea
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          placeholder="Message thread"
-          aria-label="Message thread"
-        />
-        <div>
-          <span><button title="Attach media">▧</button><button title="Attach file">＋</button></span>
-          <button className="thread-send" disabled={!text.trim()}>↗</button>
-        </div>
-      </div>
-    </aside>
   );
 }
 
@@ -980,17 +895,29 @@ function Composer({
   onSend,
   agentName,
   direct = false,
+  disabled = false,
 }: {
-  onSend: (text: string, asTask: boolean) => void;
+  onSend: (text: string) => Promise<void>;
   agentName: string;
   direct?: boolean;
+  disabled?: boolean;
 }) {
   const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
 
-  function send() {
-    if (!text.trim()) return;
-    onSend(text.trim(), false);
-    setText("");
+  async function send() {
+    if (!text.trim() || sending || disabled) return;
+    setSending(true);
+    setError("");
+    try {
+      await onSend(text.trim());
+      setText("");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "The message could not be sent.");
+    } finally {
+      setSending(false);
+    }
   }
 
   return (
@@ -1002,21 +929,31 @@ function Composer({
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
-              send();
+              void send();
             }
           }}
           placeholder={direct ? `Message @${agentName}` : `Message #all or @${agentName}`}
           aria-label="Message"
+          disabled={sending}
         />
         <div className="composer-actions">
           <div className="composer-submit-actions">
-            <button className="send-button" onClick={send}>Send <span>↵</span></button>
+            <button
+              className="send-button"
+              onClick={() => void send()}
+              disabled={sending || disabled || !text.trim()}
+            >
+              {sending ? "Sending…" : "Send"} <span>↵</span>
+            </button>
           </div>
         </div>
       </div>
+      {error && <p className="composer-error" role="alert">{error}</p>}
       <p className="composer-hint">
         <span className="pulse-dot" />
-        {direct ? `Private conversation with ${agentName}` : "Enrolled agents can see this channel"} · Shift + Enter for a new line
+        {direct
+          ? `Messages here target ${agentName}; project agents share the project session`
+          : "Selected project agents receive this message"} · Shift + Enter for a new line
       </p>
     </div>
   );
@@ -1030,9 +967,11 @@ function ChannelWorkspace({
   messages: hubMessages,
   agents,
   dispatches,
+  entries,
   connection,
   onDispatch,
   onSelectBranch,
+  onCancelJob,
 }: {
   onOpenSidebar: () => void;
   channel: string;
@@ -1041,13 +980,15 @@ function ChannelWorkspace({
   messages: UiMessage[];
   agents: HubAgent[];
   dispatches: HubDispatch[];
+  entries: HubEntry[];
   connection: "connecting" | "live" | "offline";
   onDispatch: (text: string, targetAgentIds: string[]) => Promise<void>;
   onSelectBranch: (dispatchId: string, leafId: string) => Promise<void>;
+  onCancelJob: (jobId: string) => Promise<void>;
 }) {
-  const [localMessages, setLocalMessages] = useState<UiMessage[]>([]);
   const [targets, setTargets] = useState<string[]>([]);
-  const [threadOpen, setThreadOpen] = useState(false);
+  const [actionError, setActionError] = useState("");
+  const initializedTargetChannel = useRef<string | null>(null);
   const directAgent = channel === "all"
     ? undefined
     : agents.find((agent) => agent.id === channel && agent.status !== "revoked");
@@ -1056,67 +997,97 @@ function ChannelWorkspace({
     let cancelled = false;
     queueMicrotask(() => {
       if (cancelled) return;
+      if (channel !== "all") {
+        if (!directAgent) {
+          setTargets([]);
+          return;
+        }
+        initializedTargetChannel.current = channel;
+        setTargets(["online", "busy"].includes(directAgent.status) ? [directAgent.id] : []);
+        return;
+      }
+      const available = agents.filter((agent) => agent.status !== "revoked");
+      if (available.length === 0) {
+        initializedTargetChannel.current = null;
+        setTargets([]);
+        return;
+      }
       setTargets((current) => {
-        if (directAgent) return [directAgent.id];
-        const valid = current.filter((id) => agents.some((agent) => agent.id === id));
-        return valid.length > 0 ? valid : agents.filter((agent) => agent.status !== "revoked").map((agent) => agent.id);
+        if (initializedTargetChannel.current !== channel) {
+          initializedTargetChannel.current = channel;
+          return available
+            .filter((agent) => ["online", "busy"].includes(agent.status))
+            .map((agent) => agent.id);
+        }
+        return current.filter((id) =>
+          available.some((agent) => agent.id === id && ["online", "busy"].includes(agent.status)));
       });
     });
     return () => {
       cancelled = true;
     };
-  }, [agents, directAgent]);
+  }, [agents, channel, directAgent]);
 
-  function send(text: string, asTask: boolean) {
-    if (asTask) {
-      const next: UiMessage = {
-          id: Date.now(),
-          kind: "task",
-          name: "Task created",
-          handle: "from your message",
-          time: "now",
-          avatar: "✓",
-          color: "pink",
-          task: { title: text, status: "TODO", assignees: ["ED"], due: "No due date" },
-        };
-      setLocalMessages((current) => [...current, next]);
-      return;
+  const visibleDispatches = useMemo(
+    () => directAgent
+      ? dispatches.filter((dispatch) =>
+          dispatch.jobs.some((job) => job.targetAgentId === directAgent.id))
+      : dispatches,
+    [directAgent, dispatches],
+  );
+  const visibleDispatchIds = useMemo(
+    () => new Set(visibleDispatches.map((dispatch) => dispatch.id)),
+    [visibleDispatches],
+  );
+  const visibleMessages = useMemo(
+    () => directAgent
+      ? hubMessages.filter((message) =>
+          Boolean(message.dispatchId && visibleDispatchIds.has(message.dispatchId)))
+      : hubMessages,
+    [directAgent, hubMessages, visibleDispatchIds],
+  );
+  const entriesById = useMemo(
+    () => new Map(entries.map(({ entry }) => [entry.id, entry])),
+    [entries],
+  );
+
+  function branchPreview(leafId: string | null): string {
+    let cursor = leafId ? entriesById.get(leafId) : undefined;
+    const visited = new Set<string>();
+    while (cursor && !visited.has(cursor.id)) {
+      visited.add(cursor.id);
+      if (cursor.type === "message" && cursor.message?.role === "assistant") {
+        return messageText(cursor.message.content)
+          || cursor.message.errorMessage
+          || "The agent completed without a text response.";
+      }
+      cursor = cursor.parentId ? entriesById.get(cursor.parentId) : undefined;
     }
-    if (targets.length === 0) {
-      setLocalMessages((current) => [...current, {
-        id: Date.now(),
-        kind: "agent",
-        name: "Hub",
-        handle: "system",
-        time: "now",
-        avatar: "!",
-        color: "pink",
-        text: "Choose at least one enrolled agent before sending.",
-      }]);
-      return;
+    return "No text response was recorded for this branch.";
+  }
+
+  async function send(text: string) {
+    if (targets.length === 0) throw new Error("Choose at least one available agent before sending.");
+    await onDispatch(text, targets);
+  }
+
+  async function runAction(action: () => Promise<void>) {
+    setActionError("");
+    try {
+      await action();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "The action could not be completed.");
     }
-    void onDispatch(text, targets).catch((error: unknown) => {
-      setLocalMessages((current) => [...current, {
-        id: Date.now(),
-        kind: "agent",
-        name: "Hub",
-        handle: "system",
-        time: "now",
-        avatar: "!",
-        color: "pink",
-        text: error instanceof Error ? error.message : "The dispatch could not be sent.",
-      }]);
-    });
   }
 
   return (
-    <div className={`channel-stage ${threadOpen ? "thread-open" : ""}`}>
+    <div className="channel-stage">
     <main className="channel-workspace">
       <header className="channel-header">
         <button className="mobile-sidebar-toggle" onClick={onOpenSidebar}>☰</button>
         <div className="channel-identity">
           <div><h1><span>{directAgent ? "@" : "#"}</span> {directAgent?.name ?? "all"}</h1><StatusPill tone={connection === "live" ? "green" : "pink"}>{connection.toUpperCase()}</StatusPill></div>
-          <p>{directAgent ? `One-on-one conversation with ${directAgent.name}.` : "Company-wide coordination, agent updates, and launch decisions."}</p>
+          <p>{directAgent ? `Messages in this view target ${directAgent.name}. Project agents still share the project session.` : "Coordinate work across selected project agents."}</p>
         </div>
       </header>
       <nav className="content-tabs" aria-label="Channel content">
@@ -1129,64 +1100,123 @@ function ChannelWorkspace({
       {tab === "chat" && (
         <>
           <div className="message-feed">
-            <div className="message-start">Beginning of messages</div>
-            <div className="date-separator"><span>MONDAY, JULY 27</span></div>
-            {!directAgent && <div className="system-event"><span>✦</span><p><strong>Cindy joined #all</strong> via the owner onboarding flow.</p><time>9:32 AM</time></div>}
-            {[...hubMessages, ...localMessages].map((message) => <Message key={message.id} message={message} onOpenThread={() => setThreadOpen(true)} />)}
-            {dispatches.filter((dispatch) => dispatch.status === "awaiting_selection").map((dispatch) => (
+            {!directAgent && (
+              <fieldset className="target-picker">
+                <legend>Send to agents</legend>
+                {agents.filter((agent) => agent.status !== "revoked").map((agent) => {
+                  const reachable = ["online", "busy"].includes(agent.status);
+                  return (
+                  <label key={agent.id} className={reachable ? "" : "unavailable"}>
+                    <input
+                      type="checkbox"
+                      checked={targets.includes(agent.id)}
+                      disabled={!reachable}
+                      onChange={(event) => setTargets((current) =>
+                        event.target.checked
+                          ? [...new Set([...current, agent.id])]
+                          : current.filter((id) => id !== agent.id))}
+                    />
+                    <PixelAvatar text={initials(agent.name)} color={agentColor(agent.id)} size="sm" />
+                    <span>{agent.name}</span>
+                    <i className={`presence ${agent.status === "busy" ? "busy" : agent.status === "online" ? "online" : ""}`} />
+                    <small>{agent.status}</small>
+                  </label>
+                  );
+                })}
+                {agents.filter((agent) => agent.status !== "revoked").length === 0 && (
+                  <p>Enroll an agent before sending a message.</p>
+                )}
+              </fieldset>
+            )}
+            {visibleMessages.length === 0 && (
+              <div className="chat-empty">
+                <strong>No messages yet</strong>
+                <p>{directAgent ? `Send the first targeted message to ${directAgent.name}.` : "Select one or more agents and start the conversation."}</p>
+              </div>
+            )}
+            {visibleMessages.map((message) => <Message key={message.id} message={message} />)}
+            {visibleDispatches.filter((dispatch) => dispatch.status === "running").map((dispatch) => (
+              <article className="dispatch-status" key={dispatch.id}>
+                <div><StatusPill tone="yellow">IN PROGRESS</StatusPill><h3>{dispatch.text}</h3></div>
+                <ul>
+                  {dispatch.jobs.map((job) => {
+                    const agent = agents.find((candidate) =>
+                      candidate.id === (job.assignedAgentId ?? job.targetAgentId));
+                    const cancellable = ["queued", "offered", "running"].includes(job.status);
+                    return (
+                      <li key={job.id}>
+                        <PixelAvatar text={initials(agent?.name ?? "AI")} color={agentColor(agent?.id ?? job.id)} size="sm" />
+                        <span>{agent?.name ?? "Agent"}</span>
+                        <StatusPill tone={job.status === "running" ? "yellow" : "neutral"}>{job.status.toUpperCase()}</StatusPill>
+                        {cancellable && (
+                          <button className="outline-button" onClick={() => void runAction(() => onCancelJob(job.id))}>
+                            Cancel
+                          </button>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </article>
+            ))}
+            {visibleDispatches.filter((dispatch) => dispatch.status === "awaiting_selection").map((dispatch) => (
               <article className="branch-selector" key={dispatch.id}>
                 <div><StatusPill tone="pink">CHOOSE BRANCH</StatusPill><h3>{dispatch.text}</h3></div>
                 <div>
                   {dispatch.jobs.filter((job) => job.status === "completed" && job.branchLeafId).map((job) => {
                     const agent = agents.find((candidate) => candidate.id === (job.assignedAgentId ?? job.targetAgentId));
                     return (
-                      <button key={job.id} onClick={() => void onSelectBranch(dispatch.id, job.branchLeafId!)}>
-                        <PixelAvatar text={initials(agent?.name ?? "AI")} color={agentColor(agent?.id ?? job.id)} size="sm" />
-                        Use {agent?.name ?? "agent"}’s branch <span>→</span>
+                      <button key={job.id} onClick={() => void runAction(() => onSelectBranch(dispatch.id, job.branchLeafId!))}>
+                        <span className="branch-choice-heading">
+                          <PixelAvatar text={initials(agent?.name ?? "AI")} color={agentColor(agent?.id ?? job.id)} size="sm" />
+                          Use {agent?.name ?? "agent"}’s branch <b>→</b>
+                        </span>
+                        <span className="branch-choice-preview">{branchPreview(job.branchLeafId)}</span>
                       </button>
                     );
                   })}
                 </div>
               </article>
             ))}
-            {agents.some((agent) => agent.status === "busy") && (
+            {visibleDispatches.filter((dispatch) => dispatch.status === "failed").map((dispatch) => (
+              <article className="dispatch-status failed" key={dispatch.id}>
+                <div><StatusPill tone="pink">NO RESPONSE SELECTED</StatusPill><h3>{dispatch.text}</h3></div>
+                <ul>
+                  {dispatch.jobs.map((job) => {
+                    const agent = agents.find((candidate) =>
+                      candidate.id === (job.assignedAgentId ?? job.targetAgentId));
+                    return (
+                      <li key={job.id}>
+                        <PixelAvatar text={initials(agent?.name ?? "AI")} color={agentColor(agent?.id ?? job.id)} size="sm" />
+                        <span>{agent?.name ?? "Agent"}</span>
+                        <StatusPill tone="pink">{job.status.toUpperCase()}</StatusPill>
+                        {job.error && <small>{job.error}</small>}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </article>
+            ))}
+            {actionError && <p className="composer-error" role="alert">{actionError}</p>}
+            {agents.some((agent) => agent.status === "busy" && (!directAgent || agent.id === directAgent.id)) && (
               <div className="agent-typing"><PixelAvatar text="AI" color="blue" size="sm" /><span><i /><i /><i /></span><p>An agent is working</p></div>
             )}
           </div>
-          <Composer onSend={send} agentName={directAgent?.name ?? "shark"} direct={Boolean(directAgent)} />
+          <Composer
+            onSend={send}
+            agentName={directAgent?.name ?? "selected agents"}
+            direct={Boolean(directAgent)}
+            disabled={targets.length === 0}
+          />
         </>
       )}
-      {tab === "tasks" && (
-        <div className="tab-page">
-          <div className="tab-page-heading"><div><span className="eyebrow">CHANNEL TASKS</span><h2>Work in motion</h2></div><button className="black-button">＋ New task</button></div>
-          <div className="task-list">
-            {tasks.map((task) => (
-              <article key={task.title}>
-                <span className={`task-check ${task.color}`} />
-                <div><h3>{task.title}</h3><p>Assigned to <strong>{task.owner}</strong></p></div>
-                <StatusPill tone={task.color}>{task.status}</StatusPill>
-                <button>•••</button>
-              </article>
-            ))}
-          </div>
-        </div>
-      )}
-      {tab === "files" && (
-        <div className="tab-page">
-          <div className="tab-page-heading"><div><span className="eyebrow">SHARED FILES</span><h2>Recently added</h2></div><button className="black-button">↑ Upload</button></div>
-          <div className="file-grid">
-            {files.map((file) => (
-              <article key={file.name}>
-                <span className="file-icon">{file.icon}</span>
-                <div><h3>{file.name}</h3><p>{file.meta}</p><small>Added by {file.by}</small></div>
-                <button>•••</button>
-              </article>
-            ))}
-          </div>
+      {tab !== "chat" && (
+        <div className="tab-page unavailable-view">
+          <div><span className="eyebrow">COMING SOON</span><h2>This channel view is not available yet.</h2><p>Return to Chat to coordinate with your agents.</p></div>
+          <button className="black-button" onClick={() => onTab("chat")}>Back to Chat</button>
         </div>
       )}
     </main>
-    {threadOpen && <ThreadPane onClose={() => setThreadOpen(false)} />}
     </div>
   );
 }
@@ -1525,6 +1555,8 @@ function UtilityPage({
   onCreateHostedAgent,
   onUpdateHostedAgent,
   onDeleteHostedAgent,
+  onCreateEnrollment,
+  onRevokeAgent,
   isAdmin = false,
 }: {
   active: Exclude<NavKey, "chat" | "settings">;
@@ -1556,8 +1588,17 @@ function UtilityPage({
     },
   ) => Promise<void>;
   onDeleteHostedAgent?: (agentId: string) => Promise<void>;
+  onCreateEnrollment?: (name: string) => Promise<{ secret: string; expiresAt: string }>;
+  onRevokeAgent?: (agentId: string) => Promise<void>;
   isAdmin?: boolean;
 }) {
+  const [localName, setLocalName] = useState("");
+  const [localEnrollment, setLocalEnrollment] = useState<{
+    command: string;
+    expiresAt: string;
+  } | null>(null);
+  const [localBusy, setLocalBusy] = useState(false);
+  const [localError, setLocalError] = useState("");
   const [cloudName, setCloudName] = useState("");
   const [cloudConnectionId, setCloudConnectionId] = useState("");
   const [cloudModel, setCloudModel] = useState("");
@@ -1692,6 +1733,60 @@ function UtilityPage({
     return (
       <main className="utility-page">
         <div className="utility-hero"><span>{data.icon}</span><div><p className="eyebrow">FLOCK WORKS</p><h1>{data.title}</h1><p>{data.copy}</p></div></div>
+        {isAdmin && (
+          <section className="utility-card enrollment-card local-enrollment">
+            <StatusPill tone="green">LOCAL AGENT</StatusPill>
+            <h2>Connect an agent from your computer</h2>
+            <p>Create a one-time enrollment command, then run it from the workspace the agent should use.</p>
+            <div className="local-enrollment-form">
+              <input
+                value={localName}
+                onChange={(event) => setLocalName(event.target.value)}
+                placeholder="Agent name, e.g. shark"
+                maxLength={64}
+              />
+              <button
+                className="black-button"
+                disabled={localBusy || !localName.trim()}
+                onClick={() => {
+                  if (!onCreateEnrollment) return;
+                  setLocalBusy(true);
+                  setLocalError("");
+                  setLocalEnrollment(null);
+                  void onCreateEnrollment(localName.trim())
+                    .then((enrollment) => {
+                      setLocalEnrollment({
+                        command: buildAgentInstallCommand(window.location.origin, enrollment.secret),
+                        expiresAt: enrollment.expiresAt,
+                      });
+                      setLocalName("");
+                    })
+                    .catch((error: unknown) =>
+                      setLocalError(error instanceof Error ? error.message : "Could not create enrollment"))
+                    .finally(() => setLocalBusy(false));
+                }}
+              >
+                {localBusy ? "Creating…" : "Create install command"}
+              </button>
+            </div>
+            {localEnrollment && (
+              <div className="install-command" aria-live="polite">
+                <div>
+                  <strong>Run this command once</strong>
+                  <span>Expires {new Date(localEnrollment.expiresAt).toLocaleString()}</span>
+                </div>
+                <code>{localEnrollment.command}</code>
+                <button
+                  className="outline-button"
+                  onClick={() => void navigator.clipboard.writeText(localEnrollment.command)}
+                >
+                  Copy command
+                </button>
+              </div>
+            )}
+            {localError && <p className="form-error" role="alert">{localError}</p>}
+          </section>
+        )}
         <section className="utility-card enrollment-card">
           <StatusPill tone={hostedAgentsEnabled && nousPortalEnabled ? "green" : "neutral"}>NOUS HOSTED AGENT</StatusPill>
           <h2>Create an agent on this hub</h2>
@@ -1997,7 +2092,27 @@ function UtilityPage({
                   </button>
                 </div>
               )}
-              <StatusPill tone={agent.status === "offline" ? "pink" : agent.status === "busy" ? "yellow" : "green"}>{agent.status.toUpperCase()}</StatusPill>
+              {!agent.hosting && isAdmin && agent.status !== "revoked" && (
+                <div className="cloud-agent-actions">
+                  <button
+                    className="outline-button"
+                    onClick={() => {
+                      if (!window.confirm(`Revoke ${agent.name}? It will no longer be able to connect to this hub.`)) return;
+                      void onRevokeAgent?.(agent.id)
+                        .catch((error: unknown) => setLocalError(error instanceof Error ? error.message : "Revoke failed"));
+                    }}
+                  >
+                    Revoke
+                  </button>
+                </div>
+              )}
+              <StatusPill tone={
+                ["offline", "attention", "revoked"].includes(agent.status)
+                  ? "pink"
+                  : agent.status === "busy"
+                    ? "yellow"
+                    : "green"
+              }>{agent.status.toUpperCase()}</StatusPill>
             </article>
           ))}
           {agents.length === 0 && <article><div><h2>No agents enrolled</h2><p>Create the first installation token above.</p></div></article>}
@@ -2083,6 +2198,8 @@ export default function Workspace() {
           onCreateHostedAgent={hub.createHostedAgent}
           onUpdateHostedAgent={hub.updateHostedAgent}
           onDeleteHostedAgent={hub.deleteHostedAgent}
+          onCreateEnrollment={hub.createEnrollment}
+          onRevokeAgent={hub.revokeAgent}
           isAdmin={hub.identity?.role === "admin"}
         />
       );
@@ -2112,9 +2229,11 @@ export default function Workspace() {
           messages={hub.messages}
           agents={hub.agents}
           dispatches={hub.dispatches}
+          entries={hub.entries}
           connection={hub.connection}
           onDispatch={hub.sendDispatch}
           onSelectBranch={hub.selectBranch}
+          onCancelJob={hub.cancelJob}
         />
       </>
     );

@@ -989,18 +989,161 @@ button {
 }
 
 .branch-selector > div:last-child button {
-  display: flex;
-  align-items: center;
-  gap: 7px;
+  display: grid;
+  min-width: min(320px, 100%);
+  max-width: 520px;
+  gap: 8px;
   padding: 7px 9px;
   background: var(--paper);
   border: 1.5px solid var(--ink);
   font-size: 10px;
   font-weight: 800;
+  text-align: left;
 }
 
 .branch-selector > div:last-child button:hover {
   background: var(--yellow);
+}
+
+.branch-choice-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.branch-choice-heading b {
+  margin-left: auto;
+}
+
+.branch-choice-preview {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--muted);
+  font-weight: 500;
+  line-height: 1.45;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.target-picker {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin: 0 0 16px;
+  padding: 9px 10px 10px;
+  background: #eef5f8;
+  border: 1px solid #bdccd5;
+}
+
+.target-picker legend {
+  padding: 0 5px;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.target-picker label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  background: white;
+  border: 1px solid #bdccd5;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.target-picker label:has(input:checked) {
+  background: var(--yellow);
+  border-color: var(--ink);
+}
+
+.target-picker label.unavailable {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+.target-picker input {
+  margin: 0;
+}
+
+.target-picker small {
+  color: var(--muted);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 7px;
+  text-transform: uppercase;
+}
+
+.target-picker p,
+.chat-empty p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.chat-empty {
+  display: grid;
+  place-items: center;
+  gap: 5px;
+  min-height: 150px;
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.dispatch-status {
+  margin: 20px 0 20px 48px;
+  padding: 14px;
+  background: #fff8d7;
+  border: var(--line);
+  box-shadow: var(--shadow);
+}
+
+.dispatch-status h3 {
+  margin: 8px 0 12px;
+  font-size: 13px;
+}
+
+.dispatch-status ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dispatch-status li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  background: white;
+  border: 1px solid #d8d1c5;
+  font-size: 10px;
+}
+
+.dispatch-status li > span:nth-child(2) {
+  flex: 1;
+  font-weight: 800;
+}
+
+.dispatch-status.failed {
+  background: #fff1f7;
+}
+
+.dispatch-status li > small {
+  max-width: 280px;
+  color: #a20f4f;
+  font-size: 8px;
+}
+
+.dispatch-status .outline-button {
+  min-height: 26px;
+  padding: 4px 8px;
 }
 
 .agent-typing {
@@ -1136,10 +1279,40 @@ button {
   font-size: 8px;
 }
 
+.composer-error {
+  margin: 8px 2px 0;
+  color: #a20f4f;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.composer button:disabled,
+.composer textarea:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
 .tab-page {
   min-height: 0;
   padding: 30px max(24px, calc((100% - 940px) / 2));
   overflow-y: auto;
+}
+
+.unavailable-view {
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 18px;
+  padding: 32px;
+}
+
+.unavailable-view h2 {
+  margin: 7px 0;
+}
+
+.unavailable-view p {
+  margin: 0;
+  color: var(--muted);
 }
 
 .tab-page-heading {
@@ -2360,6 +2533,57 @@ button {
   max-width: 820px;
 }
 
+.local-enrollment-form {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  gap: 8px;
+}
+
+.local-enrollment-form input {
+  min-width: 0;
+  padding: 9px 10px;
+  background: white;
+  border: var(--line);
+  font: inherit;
+}
+
+.install-command {
+  display: grid;
+  gap: 9px;
+  margin-top: 14px;
+  padding: 13px;
+  background: #eef5f8;
+  border: var(--line);
+}
+
+.install-command > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.install-command span {
+  color: var(--muted);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 8px;
+}
+
+.install-command code {
+  overflow-x: auto;
+  padding: 10px;
+  background: var(--ink);
+  color: var(--yellow);
+  font-size: 9px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.install-command .outline-button {
+  justify-self: start;
+}
+
 .provider-connect-list {
   display: flex;
   flex-wrap: wrap;
@@ -2557,6 +2781,10 @@ button {
 }
 
 @media (max-width: 900px) {
+  .local-enrollment-form {
+    grid-template-columns: 1fr;
+  }
+
   .cloud-agent-form {
     grid-template-columns: 1fr;
   }

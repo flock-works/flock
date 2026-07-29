@@ -183,7 +183,9 @@ export class AgentClient {
     }
     if (message.type === "job.abort") {
       if (this.current?.job.jobId === message.jobId && this.current.job.leaseEpoch === message.leaseEpoch) {
-        this.current.abort.abort(new Error(message.reason));
+        const current = this.current;
+        this.current = undefined;
+        current.abort.abort(new Error(message.reason));
       }
       return;
     }

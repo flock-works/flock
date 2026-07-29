@@ -125,3 +125,57 @@ test("finishes multi-agent dispatches and requires selecting a completed branch"
   assert.equal(jobs.length, 2);
   db.close();
 });
+
+test("mixed terminal outcomes still require selecting the completed multi-agent branch", async () => {
+  const db = await makeDatabase();
+  const project = db.createProject({ name: "Demo", slug: "demo", sessionId: "session-1" });
+  const agents = ["shark", "Cindy"].map((name) =>
+    db.enrollAgent({
+      enrollmentSecret: db.createEnrollment({ projectId: project.id, nameHint: name, createdBy: "owner" }).secret,
+      capabilities,
+    }).agent,
+  );
+  const { dispatch } = db.createDispatch({
+    projectId: project.id,
+    baseEntryId: null,
+    customEntryId: "dispatch-entry",
+    text: "Compare approaches",
+    userSub: "owner",
+    targetAgentIds: agents.map((agent) => agent.id),
+  });
+
+  for (const [index, agent] of agents.entries()) {
+    const offered = db.nextJobForAgent(agent.id, 10_000);
+    assert.ok(offered?.leaseId);
+    db.acceptJob({
+      jobId: offered.id,
+      agentId: agent.id,
+      leaseId: offered.leaseId,
+      leaseEpoch: offered.leaseEpoch,
+    });
+    db.updateJobLeaf(offered.id, `leaf-${index}`);
+    db.finishJob({
+      jobId: offered.id,
+      agentId: agent.id,
+      leaseId: offered.leaseId,
+      leaseEpoch: offered.leaseEpoch,
+      status: index === 0 ? "completed" : "failed",
+      leafId: `leaf-${index}`,
+      error: index === 0 ? undefined : "Provider failed",
+    });
+  }
+
+  const unresolved = db.getDispatch(dispatch.id);
+  assert.equal(unresolved?.status, "awaiting_selection");
+  assert.equal(unresolved?.selectedLeafId, null);
+  assert.equal(db.hasUnresolvedDispatch(project.id), true);
+
+  const selected = db.selectDispatchBranch({
+    dispatchId: dispatch.id,
+    leafId: "leaf-0",
+    actor: "owner",
+  });
+  assert.equal(selected.status, "completed");
+  assert.equal(selected.selectedLeafId, "leaf-0");
+  db.close();
+});
